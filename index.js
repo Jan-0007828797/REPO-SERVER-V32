@@ -94,6 +94,7 @@ function loadGlobalTrends(){
   return [
     { key:"ENERGY_CRISIS", name:"Energetická krize", icon:"⚡", desc:"Rychlý růst ceny energie." }
   ];
+}
 
 function loadCryptoTrends(){
   try{
@@ -105,8 +106,6 @@ function loadCryptoTrends(){
   return [
     { key:"CRYPTO_TREND_1", name:"Kryptotrend 1", coeff:{ BTC:1, ETH:1, LTC:1, SIA:1 } }
   ];
-}
-
 }
 
 // Trends pool (minimal for test)
