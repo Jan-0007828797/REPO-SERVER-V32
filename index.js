@@ -154,7 +154,7 @@ function makePlayer(name, role){
     role,
     joinedAt: now(),
     marketId: null,
-    wallet: { usd: 0, crypto: { BTC:0, ETH:0, LTC:0, SIA:0 } }
+    wallet: { usd: 0, crypto: { BTC:3, ETH:3, LTC:3, SIA:3 } }
   };
 }
 
@@ -201,7 +201,7 @@ function newGame({ gmName, yearsTotal, maxPlayers }){
     },
 
     crypto: {
-      rates: { BTC:100, ETH:50, LTC:20, SIA:5 },
+      rates: { BTC:8000, ETH:4000, LTC:2000, SIA:1000 },
       ratesFrozen: true,
       entries: {} // pid -> { deltas:{}, deltaUsd:number, committed:boolean }
     },
@@ -266,6 +266,11 @@ function isGM(game, playerId){
   return p && p.role==="GM";
 }
 
+function currentYearCrypto(game){
+  const y = game.year || 1;
+  return (game.trends?.byYear?.[String(y)]?.crypto) || null;
+}
+
 function currentYearGlobals(game){
   const y = game.year || 1;
   return (game.trends?.byYear?.[String(y)]?.globals) || [];
@@ -301,7 +306,18 @@ function canUseLawyerNow(game, trend){
 
 function applyTrendTriggers_OnTrendsToML(game){
   const globals = currentYearGlobals(game);
+  const cryptoTrend = currentYearCrypto(game);
   const has = (k)=> globals.some(t=>t.key===k);
+
+  // Apply crypto trend coefficients to exchange rates at the moment new trends activate for the year
+  if(cryptoTrend && cryptoTrend.coeff){
+    for(const sym of ["BTC","ETH","LTC","SIA"]){
+      const coef = Number(cryptoTrend.coeff[sym] ?? 1);
+      const prev = Number(game.crypto?.rates?.[sym] ?? 1);
+      const next = Math.max(1, prev * coef);
+      game.crypto.rates[sym] = next;
+    }
+  }
 
   // For each player apply in this exact order:
   // 1) Exchange hack (halve all) – negative, lawyer can protect
