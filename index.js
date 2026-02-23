@@ -94,6 +94,19 @@ function loadGlobalTrends(){
   return [
     { key:"ENERGY_CRISIS", name:"Energetická krize", icon:"⚡", desc:"Rychlý růst ceny energie." }
   ];
+
+function loadCryptoTrends(){
+  try{
+    const p = path.join(__dirname, "data", "cryptoTrends.json");
+    const raw = fs.readFileSync(p, "utf-8");
+    const arr = JSON.parse(raw);
+    if(Array.isArray(arr) && arr.length>0) return arr;
+  }catch(e){}
+  return [
+    { key:"CRYPTO_TREND_1", name:"Kryptotrend 1", coeff:{ BTC:1, ETH:1, LTC:1, SIA:1 } }
+  ];
+}
+
 }
 
 // Trends pool (minimal for test)
@@ -105,12 +118,8 @@ function loadGlobalTrends(){
     { key:`${c}_INFRA`, name:"Infrastruktura", icon:"📍" },
     { key:`${c}_CRISIS`, name:"Regionální krize", icon:"📍" },
   ]]));
+  const cryptoTrends = loadCryptoTrends();
 
-  const cryptoTrends = [
-    { key:"UP", name:"Krypto roste", icon:"↗️" },
-    { key:"DOWN", name:"Krypto padá", icon:"↘️" },
-    { key:"FLAT", name:"Krypto stagnuje", icon:"➡️" },
-  ];
 
   const markets = markets12.map((m, idx)=>({
     marketId: m,
