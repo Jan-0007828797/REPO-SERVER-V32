@@ -111,12 +111,46 @@ function loadCryptoTrends(){
 // Trends pool (minimal for test)
   const globalTrends = loadGlobalTrends();
 
-  const regionalTrends = Object.fromEntries(continents.map(c=>[c, [
-    { key:`${c}_GROWTH`, name:"Regionální růst", icon:"📍" },
-    { key:`${c}_SLOW`, name:"Regionální zpomalení", icon:"📍" },
-    { key:`${c}_INFRA`, name:"Infrastruktura", icon:"📍" },
-    { key:`${c}_CRISIS`, name:"Regionální krize", icon:"📍" },
-  ]]));
+  // Regionální trendy – 4 možnosti dle pravidel:
+  // - Investiční boom: do dražební položky lze přidat +1 Tradiční investici
+  // - Vysoká vzdělanost: do dražební položky lze přidat +1 Experta
+  // - Stabilita: bez vlivu
+  // - Daně: při vstupu na kontinent hráč platí 3× cenová hladina (lze chránit Právníkem v MOVE)
+  // Pozn.: pro test appky jsou zde trendy primárně informační (hráči vyhodnocují mimo aplikaci),
+  // ale poskytujeme popis a možnost ochrany (Daně) pro konzistentní UX.
+  const regionalBase = [
+    {
+      key:"REG_INVESTMENT_BOOM",
+      name:"Investiční boom",
+      icon:"📈",
+      desc:"Do dražební položky může hráč přidat o jednu Tradiční investici navíc z balíčku.",
+      lawyer:{ allowed:false }
+    },
+    {
+      key:"REG_HIGH_EDUCATION",
+      name:"Vysoká vzdělanost",
+      icon:"🎓",
+      desc:"Do dražební položky může hráč přidat o jednoho Experta navíc z balíčku.",
+      lawyer:{ allowed:false }
+    },
+    {
+      key:"REG_STABILITY",
+      name:"Stabilita",
+      icon:"🛡️",
+      desc:"Nejsou žádné vlivy.",
+      lawyer:{ allowed:false }
+    },
+    {
+      key:"REG_TAXES",
+      name:"Daně",
+      icon:"💸",
+      desc:"Hráč, který skončí svůj pohyb na daném kontinentu, zaplatí okamžitě trojnásobek cenové hladiny dle aktuální cenové hladiny. Účinku se lze vyhnout funkcí Právníka.",
+      lawyer:{ allowed:true, phase:"BIZ_MOVE_ONLY" }
+    }
+  ];
+  const regionalTrends = Object.fromEntries(
+    continents.map(c=>[c, regionalBase.map(t=>({ ...t, key:`${c}_${t.key}` }))])
+  );
   const cryptoTrends = loadCryptoTrends();
 
 
@@ -889,6 +923,21 @@ io.on("connection", (socket) => {
     game.settle.entries[playerId] = { settlementUsd, breakdown, committed:true, ts: now() };
     ackOk(cb, { settlementUsd });
     broadcast(game);
+  });
+
+  // Preview audit (no commit) – used by "Předběžný audit" in accounting.
+  socket.on("preview_audit", (payload, cb) => {
+    try{
+      const { gameId, playerId } = payload || {};
+      const game = games.get(gameId);
+      if(!game) return ackErr(cb, "Hra neexistuje.");
+      const p = game.players.find(x=>x.playerId===playerId);
+      if(!p) return ackErr(cb, "Neplatný hráč.");
+      const { settlementUsd, breakdown } = calcSettlementFor(game, playerId);
+      return ackOk(cb, { settlementUsd, breakdown });
+    }catch(e){
+      return ackErr(cb, "Chyba preview auditu.");
+    }
   });
 });
 
