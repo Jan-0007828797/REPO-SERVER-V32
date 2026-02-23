@@ -81,23 +81,23 @@ const CATALOG = (() => {
   });
 
   // Trends pool (minimal for test)
-  const globalTrends = [
-    { key:"ENERGY_CRISIS", name:"Energetická krize", icon:"⚡" },
-    { key:"GREEN_SUBSIDY", name:"Zelené dotace", icon:"🌿" },
-    { key:"INFLATION", name:"Inflace", icon:"📈" },
-    { key:"INVESTOR_FRENZY", name:"Investorská euforie", icon:"🚀" },
-    { key:"BANK_TIGHTEN", name:"Utahování politiky", icon:"🏦" },
-    { key:"DROUGHT", name:"Sucho", icon:"🌵" },
-    { key:"SUPPLY_SHOCK", name:"Šok dodavatelů", icon:"🚢" },
-    { key:"AI_BOOM", name:"AI boom", icon:"🤖" },
-    { key:"WAR_RISK", name:"Riziko konfliktu", icon:"🛡️" },
-    { key:"TAX_REFORM", name:"Daňová reforma", icon:"🧾" },
-    { key:"DEGLOBAL", name:"Deglobalizace", icon:"🌍" },
-    { key:"OIL_DROP", name:"Pokles ropy", icon:"🛢️" },
-    { key:"OIL_SPIKE", name:"Růst ropy", icon:"🔥" },
-    { key:"CHIP_SHORT", name:"Nedostatek čipů", icon:"🧩" },
-    { key:"HEALTH", name:"Zdravotní vlna", icon:"🩺" },
-    { key:"TOURISM", name:"Boom turismu", icon:"🧳" },
+    const globalTrends = [
+    { key:"ENERGY_CRISIS", name:"Energetická krize", icon:"⚡", desc:"Rychl\u00fd r\u016fst ceny energie. Zvy\u0161uje n\u00e1klady na elekt\u0159inu a tla\u010d\u00ed na mar\u017ee energeticky n\u00e1ro\u010dn\u00fdch investic." },
+    { key:"GREEN_SUBSIDY", name:"Zelené dotace", icon:"🌿", desc:"St\u00e1t podporuje udr\u017eiteln\u00e9 projekty. Vybran\u00e9 \u201ezelen\u00e9\u201c investice mohou z\u00edskat bonus k produkci nebo slevu na n\u00e1kladech." },
+    { key:"INFLATION", name:"Inflace", icon:"📈", desc:"Roste v\u0161eobecn\u00e1 cenov\u00e1 hladina. Pen\u00edze ztr\u00e1c\u00ed hodnotu, n\u011bkter\u00e9 trhy zdra\u017euj\u00ed a roste tlak na n\u00e1klady." },
+    { key:"INVESTOR_FRENZY", name:"Investorská euforie", icon:"🚀", desc:"Investo\u0159i nakupuj\u00ed rizikov\u00e1 aktiva. Zvy\u0161uje se z\u00e1jem o r\u016fstov\u00e9 sektory, n\u011bkde roste v\u00fdnos / ceny v aukc\u00edch." },
+    { key:"BANK_TIGHTEN", name:"Utahování politiky", icon:"🏦", desc:"Centr\u00e1ln\u00ed banky zvy\u0161uj\u00ed sazby. Zhor\u0161uje se dostupnost kapit\u00e1lu, konzervativn\u00ed aktiva jsou stabiln\u011bj\u0161\u00ed ne\u017e r\u016fstov\u00e1." },
+    { key:"DROUGHT", name:"Sucho", icon:"🌵", desc:"Dlouh\u00e9 sucho omezuje produkci v zem\u011bd\u011blstv\u00ed a zvy\u0161uje ceny vybran\u00fdch komodit." },
+    { key:"SUPPLY_SHOCK", name:"Šok dodavatelů", icon:"🚢", desc:"Zpo\u017ed\u011bn\u00ed a zdra\u017een\u00ed logistiky. N\u011bkter\u00e9 investice maj\u00ed vy\u0161\u0161\u00ed n\u00e1klady nebo do\u010dasn\u011b ni\u017e\u0161\u00ed produkci." },
+    { key:"AI_BOOM", name:"AI boom", icon:"🤖", desc:"Technologick\u00fd skok. Tech/automatizace z\u00edsk\u00e1v\u00e1 v\u00fdhodu; roste popt\u00e1vka po v\u00fdpo\u010detn\u00edm v\u00fdkonu." },
+    { key:"WAR_RISK", name:"Riziko konfliktu", icon:"🛡️", desc:"Trhy jsou nerv\u00f3zn\u00ed. Zvy\u0161uje volatilitu a m\u016f\u017ee p\u0159in\u00e9st negativn\u00ed dopady ve vybran\u00fdch regionech/odv\u011btv\u00edch." },
+    { key:"TAX_REFORM", name:"Daňová reforma", icon:"🧾", desc:"M\u011bn\u00ed se da\u0148ov\u00e9 zat\u00ed\u017een\u00ed. N\u011bkter\u00e9 aktivity jsou znev\u00fdhodn\u011bny, jin\u00e9 naopak zv\u00fdhodn\u011bny." },
+    { key:"DEGLOBAL", name:"Deglobalizace", icon:"🌍", desc:"Omezen\u00ed mezin\u00e1rodn\u00edho obchodu. Region\u00e1ln\u00ed sob\u011bsta\u010dnost roste, glob\u00e1ln\u00ed logistika trp\u00ed." },
+    { key:"OIL_DROP", name:"Pokles ropy", icon:"🛢️", desc:"Levn\u011bj\u0161\u00ed ropa zlev\u0148uje dopravu a pr\u016fmysl, ale m\u016f\u017ee zhor\u0161it zisky ropn\u00fdch aktivit." },
+    { key:"OIL_SPIKE", name:"Růst ropy", icon:"🔥", desc:"Dra\u017e\u0161\u00ed ropa zdra\u017euje dopravu a v\u00fdrobu. Energetick\u00e9 sektory mohou kr\u00e1tkodob\u011b profitovat." },
+    { key:"CHIP_SHORT", name:"Nedostatek čipů", icon:"🧩", desc:"V\u00fdpadky v dod\u00e1vk\u00e1ch \u010dip\u016f. Zpomaluje v\u00fdrobu elektroniky, prodlu\u017euje dodac\u00ed lh\u016fty." },
+    { key:"HEALTH", name:"Zdravotní vlna", icon:"🩺", desc:"Zdravotn\u00ed omezen\u00ed m\u011bn\u00ed chov\u00e1n\u00ed lid\u00ed. Cestov\u00e1n\u00ed a slu\u017eby mohou klesnout, jin\u00e9 sektory r\u016fst." },
+    { key:"TOURISM", name:"Boom turismu", icon:"🧳", desc:"Siln\u00e1 sez\u00f3na cestov\u00e1n\u00ed. Slu\u017eby, doprava a m\u011bstsk\u00e9 trhy z\u00edsk\u00e1vaj\u00ed bonus." },
   ];
 
   const regionalTrends = Object.fromEntries(continents.map(c=>[c, [
