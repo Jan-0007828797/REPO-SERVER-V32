@@ -490,7 +490,9 @@ function gmNext(game){
     if(game.bizStep==="TRENDS"){ applyTrendTriggers_OnTrendsToML(game); game.bizStep="ML_BID"; return; }
     if(game.bizStep==="ML_BID"){ game.bizStep="MOVE"; return; }
     if(game.bizStep==="MOVE"){ game.bizStep="AUCTION_ENVELOPE"; return; }
-    if(game.bizStep==="AUCTION_ENVELOPE"){ game.phase="CRYPTO"; game.bizStep=null; return; }
+    // New sub-phase: ACQUIRE (scan acquired cards) between AUCTION and CRYPTO
+    if(game.bizStep==="AUCTION_ENVELOPE"){ game.bizStep="ACQUIRE"; return; }
+    if(game.bizStep==="ACQUIRE"){ game.phase="CRYPTO"; game.bizStep=null; return; }
   } else if(game.phase==="CRYPTO"){
     game.phase="SETTLE"; return;
   } else if(game.phase==="SETTLE"){
@@ -510,8 +512,9 @@ function gmBack(game){
     if(game.bizStep==="ML_BID"){ game.bizStep="TRENDS"; return; }
     if(game.bizStep==="MOVE"){ game.bizStep="ML_BID"; return; }
     if(game.bizStep==="AUCTION_ENVELOPE"){ game.bizStep="MOVE"; return; }
+    if(game.bizStep==="ACQUIRE"){ game.bizStep="AUCTION_ENVELOPE"; return; }
   } else if(game.phase==="CRYPTO"){
-    game.phase="BIZ"; game.bizStep="AUCTION_ENVELOPE"; return;
+    game.phase="BIZ"; game.bizStep="ACQUIRE"; return;
   } else if(game.phase==="SETTLE"){
     game.phase="CRYPTO"; return;
   }
@@ -803,6 +806,55 @@ io.on("connection", (socket) => {
   });
 
   // Scan cards
+  // Acquisition flow (BIZ/ACQUIRE): preview -> accept/reject
+  socket.on("scan_preview", (payload, cb) => {
+    const { gameId, playerId, cardQr } = payload || {};
+    const game = getGame(gameId);
+    if(!game) return ackErr(cb, "Game not found", "NOT_FOUND");
+    if(game.phase!=="BIZ" || game.bizStep!=="ACQUIRE") return ackErr(cb, "Not ACQUIRE step", "BAD_STATE");
+    const id = String(cardQr||"").trim();
+    if(!id) return ackErr(cb, "Bad QR", "BAD_INPUT");
+
+    const card = CATALOG.investments.find(c=>c.cardId===id)
+      || CATALOG.miningFarms.find(c=>c.cardId===id)
+      || CATALOG.experts.find(c=>c.cardId===id);
+    if(!card) return ackErr(cb, "Unknown card", "UNKNOWN");
+
+    const sets = game.availableCards;
+    const set = card.kind==="INVESTMENT" ? sets.investments : card.kind==="MINING_FARM" ? sets.miningFarms : sets.experts;
+    if(!set.has(card.cardId)) return ackErr(cb, "Karta není v nabídce.", "NOT_AVAILABLE");
+
+    ackOk(cb, { card });
+  });
+
+  socket.on("claim_card", (payload, cb) => {
+    const { gameId, playerId, cardId } = payload || {};
+    const game = getGame(gameId);
+    if(!game) return ackErr(cb, "Game not found", "NOT_FOUND");
+    if(game.phase!=="BIZ" || game.bizStep!=="ACQUIRE") return ackErr(cb, "Not ACQUIRE step", "BAD_STATE");
+    const id = String(cardId||"").trim();
+    if(!id) return ackErr(cb, "Bad cardId", "BAD_INPUT");
+
+    const card = CATALOG.investments.find(c=>c.cardId===id)
+      || CATALOG.miningFarms.find(c=>c.cardId===id)
+      || CATALOG.experts.find(c=>c.cardId===id);
+    if(!card) return ackErr(cb, "Unknown card", "UNKNOWN");
+
+    const sets = game.availableCards;
+    const set = card.kind==="INVESTMENT" ? sets.investments : card.kind==="MINING_FARM" ? sets.miningFarms : sets.experts;
+    if(!set.has(card.cardId)) return ackErr(cb, "Karta není v nabídce.", "NOT_AVAILABLE");
+
+    set.delete(card.cardId);
+    const inv = game.inventory[playerId] || blankInventory();
+    if(card.kind==="EXPERT") inv.experts.push({ ...card, used:false });
+    else if(card.kind==="INVESTMENT") inv.investments.push({ ...card });
+    else inv.miningFarms.push({ ...card });
+    game.inventory[playerId]=inv;
+
+    ackOk(cb, { card });
+    broadcast(game);
+  });
+
   socket.on("scan_card", (payload, cb) => {
     const { gameId, playerId, cardQr } = payload || {};
     const game = getGame(gameId);
@@ -869,9 +921,14 @@ io.on("connection", (socket) => {
 
     const clean = {};
     let deltaUsd = 0;
+    const wallet = (game.players.find(p=>p.playerId===playerId)?.wallet?.crypto) || { BTC:0, ETH:0, LTC:0, SIA:0 };
     for(const sym of ["BTC","ETH","LTC","SIA"]){
       const d = Math.floor(Number(deltas?.[sym]||0));
       if(!Number.isFinite(d)) return ackErr(cb, "Bad deltas", "BAD_INPUT");
+      // Cannot sell more than owned
+      if(d < 0 && Math.abs(d) > Number(wallet[sym]||0)){
+        return ackErr(cb, `Nelze prodat více ${sym} než vlastníš.`, "GUARD_FAIL");
+      }
       clean[sym]=d;
       deltaUsd += -d * Number(game.crypto.rates[sym]||0); // buying positive costs USD (negative delta), selling negative gives USD
     }
