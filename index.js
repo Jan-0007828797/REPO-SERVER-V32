@@ -3,6 +3,8 @@ const cors = require("cors");
 const http = require("http");
 const { Server } = require("socket.io");
 const { v4: uuidv4 } = require("uuid");
+const fs = require("fs");
+const path = require("path");
 
 const app = express();
 app.use(cors({ origin: true }));
@@ -80,25 +82,22 @@ const CATALOG = (() => {
     };
   });
 
-  // Trends pool (minimal for test)
-    const globalTrends = [
-    { key:"ENERGY_CRISIS", name:"Energetická krize", icon:"⚡", desc:"Rychl\u00fd r\u016fst ceny energie. Zvy\u0161uje n\u00e1klady na elekt\u0159inu a tla\u010d\u00ed na mar\u017ee energeticky n\u00e1ro\u010dn\u00fdch investic." },
-    { key:"GREEN_SUBSIDY", name:"Zelené dotace", icon:"🌿", desc:"St\u00e1t podporuje udr\u017eiteln\u00e9 projekty. Vybran\u00e9 \u201ezelen\u00e9\u201c investice mohou z\u00edskat bonus k produkci nebo slevu na n\u00e1kladech." },
-    { key:"INFLATION", name:"Inflace", icon:"📈", desc:"Roste v\u0161eobecn\u00e1 cenov\u00e1 hladina. Pen\u00edze ztr\u00e1c\u00ed hodnotu, n\u011bkter\u00e9 trhy zdra\u017euj\u00ed a roste tlak na n\u00e1klady." },
-    { key:"INVESTOR_FRENZY", name:"Investorská euforie", icon:"🚀", desc:"Investo\u0159i nakupuj\u00ed rizikov\u00e1 aktiva. Zvy\u0161uje se z\u00e1jem o r\u016fstov\u00e9 sektory, n\u011bkde roste v\u00fdnos / ceny v aukc\u00edch." },
-    { key:"BANK_TIGHTEN", name:"Utahování politiky", icon:"🏦", desc:"Centr\u00e1ln\u00ed banky zvy\u0161uj\u00ed sazby. Zhor\u0161uje se dostupnost kapit\u00e1lu, konzervativn\u00ed aktiva jsou stabiln\u011bj\u0161\u00ed ne\u017e r\u016fstov\u00e1." },
-    { key:"DROUGHT", name:"Sucho", icon:"🌵", desc:"Dlouh\u00e9 sucho omezuje produkci v zem\u011bd\u011blstv\u00ed a zvy\u0161uje ceny vybran\u00fdch komodit." },
-    { key:"SUPPLY_SHOCK", name:"Šok dodavatelů", icon:"🚢", desc:"Zpo\u017ed\u011bn\u00ed a zdra\u017een\u00ed logistiky. N\u011bkter\u00e9 investice maj\u00ed vy\u0161\u0161\u00ed n\u00e1klady nebo do\u010dasn\u011b ni\u017e\u0161\u00ed produkci." },
-    { key:"AI_BOOM", name:"AI boom", icon:"🤖", desc:"Technologick\u00fd skok. Tech/automatizace z\u00edsk\u00e1v\u00e1 v\u00fdhodu; roste popt\u00e1vka po v\u00fdpo\u010detn\u00edm v\u00fdkonu." },
-    { key:"WAR_RISK", name:"Riziko konfliktu", icon:"🛡️", desc:"Trhy jsou nerv\u00f3zn\u00ed. Zvy\u0161uje volatilitu a m\u016f\u017ee p\u0159in\u00e9st negativn\u00ed dopady ve vybran\u00fdch regionech/odv\u011btv\u00edch." },
-    { key:"TAX_REFORM", name:"Daňová reforma", icon:"🧾", desc:"M\u011bn\u00ed se da\u0148ov\u00e9 zat\u00ed\u017een\u00ed. N\u011bkter\u00e9 aktivity jsou znev\u00fdhodn\u011bny, jin\u00e9 naopak zv\u00fdhodn\u011bny." },
-    { key:"DEGLOBAL", name:"Deglobalizace", icon:"🌍", desc:"Omezen\u00ed mezin\u00e1rodn\u00edho obchodu. Region\u00e1ln\u00ed sob\u011bsta\u010dnost roste, glob\u00e1ln\u00ed logistika trp\u00ed." },
-    { key:"OIL_DROP", name:"Pokles ropy", icon:"🛢️", desc:"Levn\u011bj\u0161\u00ed ropa zlev\u0148uje dopravu a pr\u016fmysl, ale m\u016f\u017ee zhor\u0161it zisky ropn\u00fdch aktivit." },
-    { key:"OIL_SPIKE", name:"Růst ropy", icon:"🔥", desc:"Dra\u017e\u0161\u00ed ropa zdra\u017euje dopravu a v\u00fdrobu. Energetick\u00e9 sektory mohou kr\u00e1tkodob\u011b profitovat." },
-    { key:"CHIP_SHORT", name:"Nedostatek čipů", icon:"🧩", desc:"V\u00fdpadky v dod\u00e1vk\u00e1ch \u010dip\u016f. Zpomaluje v\u00fdrobu elektroniky, prodlu\u017euje dodac\u00ed lh\u016fty." },
-    { key:"HEALTH", name:"Zdravotní vlna", icon:"🩺", desc:"Zdravotn\u00ed omezen\u00ed m\u011bn\u00ed chov\u00e1n\u00ed lid\u00ed. Cestov\u00e1n\u00ed a slu\u017eby mohou klesnout, jin\u00e9 sektory r\u016fst." },
-    { key:"TOURISM", name:"Boom turismu", icon:"🧳", desc:"Siln\u00e1 sez\u00f3na cestov\u00e1n\u00ed. Slu\u017eby, doprava a m\u011bstsk\u00e9 trhy z\u00edsk\u00e1vaj\u00ed bonus." },
+  
+function loadGlobalTrends(){
+  try{
+    const p = path.join(__dirname, "data", "globalTrends.json");
+    const raw = fs.readFileSync(p, "utf-8");
+    const arr = JSON.parse(raw);
+    if(Array.isArray(arr) && arr.length>0) return arr;
+  }catch(e){}
+  // Fallback (should not happen in deploy)
+  return [
+    { key:"ENERGY_CRISIS", name:"Energetická krize", icon:"⚡", desc:"Rychlý růst ceny energie." }
   ];
+}
+
+// Trends pool (minimal for test)
+  const globalTrends = loadGlobalTrends();
 
   const regionalTrends = Object.fromEntries(continents.map(c=>[c, [
     { key:`${c}_GROWTH`, name:"Regionální růst", icon:"📍" },
@@ -169,6 +168,8 @@ function newGame({ gmName, yearsTotal, maxPlayers }){
     trends: null,
     reveals: {},
 
+    lawyer: { protections: {}, notices: {} },
+
     inventory: { [gm.playerId]: blankInventory() },
     availableCards: {
       investments: new Set(CATALOG.investments.map(c=>c.cardId)),
@@ -222,6 +223,7 @@ function gamePublic(game){
     players: game.players.map(p=>({ playerId:p.playerId, name:p.name, role:p.role, marketId:p.marketId, wallet:p.wallet })),
     trends: game.trends,
     reveals: game.reveals,
+    lawyer: game.lawyer,
     inventory: game.inventory,
     available: {
       investments: Array.from(game.availableCards.investments),
@@ -256,6 +258,74 @@ function isGM(game, playerId){
   return p && p.role==="GM";
 }
 
+function currentYearGlobals(game){
+  const y = game.year || 1;
+  return (game.trends?.byYear?.[String(y)]?.globals) || [];
+}
+
+function ensureLawyerStore(game, playerId){
+  if(!game.lawyer) game.lawyer = { protections:{}, notices:{} };
+  if(!game.lawyer.protections[playerId]) game.lawyer.protections[playerId] = {};
+  if(!game.lawyer.protections[playerId][String(game.year||1)]) game.lawyer.protections[playerId][String(game.year||1)] = {};
+  if(!game.lawyer.notices[playerId]) game.lawyer.notices[playerId] = [];
+}
+
+function isProtectedFrom(game, playerId, trendKey){
+  const y = String(game.year||1);
+  return !!game.lawyer?.protections?.[playerId]?.[y]?.[trendKey];
+}
+
+function addNotice(game, playerId, trendKey, message){
+  ensureLawyerStore(game, playerId);
+  game.lawyer.notices[playerId].push({ year: game.year||1, trendKey, message, ts: now() });
+}
+
+function canUseLawyerNow(game, trend){
+  const phase = game.phase;
+  const biz = game.bizStep;
+  const req = trend?.lawyer?.phase;
+  if(!trend?.lawyer?.allowed) return false;
+  if(req==="BIZ_TRENDS_ONLY") return phase==="BIZ" && biz==="TRENDS";
+  if(req==="BIZ_MOVE_ONLY") return phase==="BIZ" && biz==="MOVE";
+  if(req==="AUDIT_ANYTIME_BEFORE_CLOSE") return phase==="SETTLE";
+  return false;
+}
+
+function applyTrendTriggers_OnTrendsToML(game){
+  const globals = currentYearGlobals(game);
+  const has = (k)=> globals.some(t=>t.key===k);
+
+  // For each player apply in this exact order:
+  // 1) Exchange hack (halve all) – negative, lawyer can protect
+  // 2) Forks – positive
+  // 3) Hyperinflation – not applied by app, only notice if protected
+  for(const p of game.players){
+    const pid = p.playerId;
+
+    if(has("EXCHANGE_HACK") && !isProtectedFrom(game, pid, "EXCHANGE_HACK")){
+      for(const sym of ["BTC","ETH","LTC","SIA"]){
+        const v = Math.floor(Number(p.wallet?.crypto?.[sym]||0) / 2);
+        p.wallet.crypto[sym] = v;
+      }
+    } else if(has("EXCHANGE_HACK") && isProtectedFrom(game, pid, "EXCHANGE_HACK")){
+      addNotice(game, pid, "EXCHANGE_HACK", "Ochráněno právníkem před hackerským útokem na kryptoburzu (krypto zůstatky se nesnížily).");
+    }
+
+    if(has("FORK_BTC_ETH")){
+      p.wallet.crypto.BTC = Number(p.wallet.crypto.BTC||0) * 2;
+      p.wallet.crypto.ETH = Number(p.wallet.crypto.ETH||0) * 2;
+    }
+    if(has("FORK_LTC_SIA")){
+      p.wallet.crypto.LTC = Number(p.wallet.crypto.LTC||0) * 2;
+      p.wallet.crypto.SIA = Number(p.wallet.crypto.SIA||0) * 2;
+    }
+
+    if(has("HYPERINFLATION_USD_HALVE") && isProtectedFrom(game, pid, "HYPERINFLATION_USD_HALVE")){
+      addNotice(game, pid, "HYPERINFLATION_USD_HALVE", "Ochráněno právníkem před Hyperinflací (tento hráč si NEodečítá 1/2 USD).");
+    }
+  }
+}
+
 function resetStepData(game){
   game.biz.mlBids = {};
   game.biz.move = {};
@@ -281,18 +351,40 @@ function startNewYear(game){
 }
 
 function calcSettlementFor(game, playerId){
-  // Minimal, deterministic settlement for test:
-  // base = sum(usdProduction) of owned investments
-  // steal effects adjust base (same card base prod)
+  // Deterministic settlement (test):
+  // - base USD from investments (may be modified by global trends at AUDIT)
+  // - electricity costs from mining farms (may be modified by global trends)
+  // - expert effects (steal base production)
+
   const inv = game.inventory[playerId] || blankInventory();
-  const base = inv.investments.reduce((s,c)=>s + Number(c.usdProduction||0), 0);
 
+  const y = game.year || 1;
+  const globals = (game.trends?.byYear?.[String(y)]?.globals) || [];
+
+  const protectedMap = (game.lawyer?.protections?.[playerId]?.[String(y)]) || {};
+  const protectedSet = new Set(Object.keys(protectedMap));
+  const hasTrend = (key)=> globals.some(t=>t.key===key);
+  const isProtected = (key)=> protectedSet.has(key);
+
+  // Base production
+  let base = inv.investments.reduce((s,c)=>s + Number(c.usdProduction||0), 0);
+
+  // Global trend modifiers for AUDIT (only if trend applies and player not protected)
+  if(hasTrend("ECONOMIC_CRISIS_NO_TRAD_BASE") && !isProtected("ECONOMIC_CRISIS_NO_TRAD_BASE")) base = 0;
+  if(hasTrend("TRAD_INV_DOUBLE_USD")) base = base * 2; // positive trend (no lawyer)
+
+  // Electricity costs
+  let electricity = inv.miningFarms.reduce((s,c)=>s + Number(c.electricityUSD||0), 0);
+  if(hasTrend("EXPENSIVE_ELECTRICITY") && !isProtected("EXPENSIVE_ELECTRICITY")) electricity = electricity * 2;
+
+  // Build breakdown
+  const breakdown = [];
+  breakdown.push({ label:"Základní produkce (investice)", usd: base });
+  if(electricity){ breakdown.push({ label:"Elektřina (mining)", usd: -electricity }); }
+
+  // Expert effects (steal base prod)
   let effectsDelta = 0;
-  const breakdown = [
-    { label:"Základní produkce (investice)", usd: base }
-  ];
-
-  for(const e of game.settle.effects){
+  for(const e of (game.settle.effects||[])){
     if(e.type==="STEAL_BASE_PRODUCTION"){
       if(e.toPlayerId===playerId){
         effectsDelta += e.usd;
@@ -305,9 +397,10 @@ function calcSettlementFor(game, playerId){
     }
   }
 
-  const settlementUsd = base + effectsDelta;
+  const settlementUsd = base - electricity + effectsDelta;
   return { settlementUsd, breakdown };
 }
+
 
 function canBack(game){
   // Guard: can back only if current step has no commits (for its relevant step)
@@ -336,7 +429,7 @@ function canBack(game){
 
 function gmNext(game){
   if(game.phase==="BIZ"){
-    if(game.bizStep==="TRENDS"){ game.bizStep="ML_BID"; return; }
+    if(game.bizStep==="TRENDS"){ applyTrendTriggers_OnTrendsToML(game); game.bizStep="ML_BID"; return; }
     if(game.bizStep==="ML_BID"){ game.bizStep="MOVE"; return; }
     if(game.bizStep==="MOVE"){ game.bizStep="AUCTION_ENVELOPE"; return; }
     if(game.bizStep==="AUCTION_ENVELOPE"){ game.phase="CRYPTO"; game.bizStep=null; return; }
@@ -509,6 +602,39 @@ io.on("connection", (socket) => {
 
     game.reveals[playerId].cryptoYearsRevealed.push(target);
     ackOk(cb, { year: target });
+    broadcast(game);
+  });
+
+
+  // Lawyer protection against a specific global trend (per-player, per-year)
+  socket.on("use_lawyer_on_trend", (payload, cb) => {
+    const { gameId, playerId, trendKey } = payload || {};
+    const game = getGame(gameId);
+    if(!game) return ackErr(cb, "Game not found", "NOT_FOUND");
+    if(game.status!=="IN_PROGRESS") return ackErr(cb, "Bad state", "BAD_STATE");
+
+    const y = String(game.year||1);
+    const globals = currentYearGlobals(game);
+    const trend = globals.find(t=>t.key===trendKey) || null;
+    if(!trend) return ackErr(cb, "Trend není aktivní v tomto roce.", "NOT_ACTIVE");
+
+    if(!trend.lawyer?.allowed) return ackErr(cb, "Na tento trend nelze použít Právníka.", "NO_LAWYER");
+    if(!canUseLawyerNow(game, trend)) return ackErr(cb, "Právníka nyní nelze použít (špatná fáze).", "BAD_TIME");
+
+    const inv = game.inventory[playerId] || blankInventory();
+    const ex = inv.experts.find(e=>e.functionKey==="LAWYER_TRENDS" && !e.used);
+    if(!ex) return ackErr(cb, "Právník není k dispozici.", "NO_POWER");
+
+    // consume lawyer
+    ex.used = true;
+
+    ensureLawyerStore(game, playerId);
+    game.lawyer.protections[playerId][y][trendKey] = true;
+
+    // Immediate on-screen notice (player can show others)
+    addNotice(game, playerId, trendKey, `Právník aktivován: ${trend.name}. Tento globální trend se na hráče v roce ${game.year||1} nevztahuje.`);
+
+    ackOk(cb, { trendKey });
     broadcast(game);
   });
 
