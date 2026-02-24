@@ -1,1 +1,18 @@
-Railway: root=SERVER, start=npm start. Health: /health
+{
+  "name": "kryptopoly-server-v3_2",
+  "version": "3.2.0",
+  "main": "index.js",
+  "type": "commonjs",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "cors": "^2.8.5",
+    "express": "^4.19.2",
+    "socket.io": "^4.7.5",
+    "uuid": "^9.0.1"
+  }
+}
