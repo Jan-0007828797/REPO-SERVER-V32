@@ -908,6 +908,17 @@ io.on("connection", (socket) => {
     ex.used=true;
 
     game.settle.effects.push({ type:"STEAL_BASE_PRODUCTION", fromPlayerId: targetPlayerId, toPlayerId: playerId, cardId, usd });
+
+    // If some players already started audit, update their computed settlements so UI can show "Finální audit".
+    try{
+      for(const p of game.players){
+        const pid = p.playerId;
+        if(game.settle.entries?.[pid]?.committed){
+          const { settlementUsd, breakdown } = calcSettlementFor(game, pid);
+          game.settle.entries[pid] = { ...game.settle.entries[pid], settlementUsd, breakdown };
+        }
+      }
+    }catch(e){}
     ackOk(cb);
     broadcast(game);
   });
