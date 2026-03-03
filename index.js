@@ -36,6 +36,39 @@ function shuffle(arr){ const a=[...arr]; for(let i=a.length-1;i>0;i--){ const j=
 function pickRandom(arr, k){ return shuffle(arr).slice(0,k); }
 
 const continents = ["EUROPE","ASIA","AFRICA","N_AMERICA","S_AMERICA","OCEANIA"];
+
+// Variant A (spec): market identity is (continent + market type).
+// Each continent has exactly 2 markets (Bible mapping).
+// Mining farms are separate board slots 1..3 (not on a continent).
+const CONTINENT_MARKET_TYPES = {
+  N_AMERICA: ["INDUSTRY", "MINING"],
+  S_AMERICA: ["MINING", "AGRO"],
+  EUROPE: ["INDUSTRY", "AGRO"],
+  AFRICA: ["MINING", "AGRO"],
+  ASIA: ["INDUSTRY", "MINING"],
+  OCEANIA: ["INDUSTRY", "AGRO"],
+};
+
+function mkMarketId(continent, type){
+  return `${continent}_${type}`;
+}
+
+function parseMarketId(marketId){
+  const id = String(marketId||"");
+  if(id.startsWith("FARM_")){
+    const slot = Number(id.split("_")[1]||0);
+    return { kind:"FARM", slot: Number.isFinite(slot)?slot:null };
+  }
+  const parts = id.split("_");
+  if(parts.length>=2){
+    const continent = parts.slice(0, parts.length-1).join("_");
+    const type = parts[parts.length-1];
+    if(continents.includes(continent) && ["INDUSTRY","MINING","AGRO"].includes(type)){
+      return { kind:"MARKET", continent, type };
+    }
+  }
+  return { kind:"UNKNOWN" };
+}
 const markets12 = Array.from({length:12}, (_,i)=>`M${String(i+1).padStart(2,"0")}`);
 
 // Simple catalog (test) – cards are identified by QR payload == cardId
@@ -157,29 +190,31 @@ function loadCryptoTrends(){
   const cryptoTrends = loadCryptoTrends();
 
 
-  // Markets (Výběr trhu): per Bible each continent exposes exactly 2 market types
-  // (Průmysl, Těžba, Zemědělství). Keep only these three types in the catalog.
-  // IMPORTANT: marketIds are stable and encode continent + type.
-  const MARKET_TYPES_BY_CONTINENT = {
-    N_AMERICA: ["INDUSTRY", "MINING"],
-    S_AMERICA: ["MINING", "AGRI"],
-    EUROPE: ["INDUSTRY", "AGRI"],
-    AFRICA: ["MINING", "AGRI"],
-    ASIA: ["INDUSTRY", "MINING"],
-    OCEANIA: ["INDUSTRY", "AGRI"],
-  };
-
   const markets = [];
-  for (const cont of continents) {
-    const types = MARKET_TYPES_BY_CONTINENT[cont] || [];
-    for (const t of types) {
+  // 6 continents × 2 markets each (Bible mapping)
+  for(const continent of continents){
+    const types = CONTINENT_MARKET_TYPES[continent] || [];
+    for(const type of types){
       markets.push({
-        marketId: `${cont}_${t}`,
-        label: `${cont}_${t}`,
-        continent: cont,
-        type: t,
+        marketId: mkMarketId(continent, type),
+        label: `${continent} ${type}`,
+        continent,
+        type, // "INDUSTRY" | "MINING" | "AGRO"
+        kind: "MARKET",
       });
     }
+  }
+
+  // 3 mining farm board slots (not on continents)
+  for(let i=1;i<=3;i++){
+    markets.push({
+      marketId: `FARM_${i}`,
+      label: `Farma ${i}`,
+      continent: null,
+      type: "FARM",
+      kind: "FARM",
+      slot: i,
+    });
   }
 
   return { investments, miningFarms, experts, globalTrends, regionalTrends, cryptoTrends, continents, markets };
@@ -283,10 +318,8 @@ function newGame({ gmName, yearsTotal, maxPlayers }){
     },
 
     settle: {
-      entries: {},  // pid -> { settlementUsd:number, committed:boolean, summary, details }
-      // Expert actions used specifically for AUDIT (revealed only in final audit)
-      attacks: [],  // [{id, mode:"SABOTEUR"|"THIEF", fromPlayerId, toPlayerId, usd, ts, negated:false}]
-      shields: {},  // pid -> { active:boolean, used:boolean, usedAttackId?:string, ts }
+      entries: {},  // pid -> { settlementUsd:number, committed:boolean, breakdown:[{label,usd}] }
+      effects: []   // applied expert effects for this year
     }
   };
 
@@ -434,12 +467,22 @@ function resetStepData(game){
   game.biz.move = {};
   game.biz.auction = { entries:{}, lobbyistPhaseActive:false };
   game.biz.acquire = { entries:{} };
+  game.settle.effects = [];
   game.settle.entries = {};
-  game.settle.attacks = [];
-  game.settle.shields = {};
   game.crypto.entries = {};
-  // market locks persist within year, but we rebuild for move step
+  // Rebuilt when entering MOVE (must reflect current player positions).
   game.biz.marketLocks = Object.fromEntries(CATALOG.markets.map(m=>[m.marketId, null]));
+}
+
+function rebuildMarketLocksFromPositions(game){
+  // Start from empty lock map, then lock current player positions.
+  game.biz.marketLocks = Object.fromEntries(CATALOG.markets.map(m=>[m.marketId, null]));
+  for(const p of game.players){
+    const mid = p.marketId;
+    if(mid && (mid in game.biz.marketLocks)){
+      game.biz.marketLocks[mid] = p.playerId;
+    }
+  }
 }
 
 function startNewYear(game){
@@ -456,26 +499,17 @@ function startNewYear(game){
   for(const p of game.players){
     if(!game.reveals[p.playerId]) game.reveals[p.playerId] = { globalYearsRevealed: [], cryptoYearsRevealed: [] };
     if(!game.inventory[p.playerId]) game.inventory[p.playerId] = blankInventory();
-    // Experts are usable once per year (per UX spec). Reset yearly usage.
-    try{
-      const inv = game.inventory[p.playerId];
-      for(const ex of (inv?.experts||[])) ex.used = false;
-    }catch{}
   }
 }
 
-function calcSettlementFor(game, playerId, opts){
-  // Full settlement logic for UX:
-  // - investments produce USD (base + regional + global bonuses)
-  // - mining farms cost electricity and produce crypto
-  // - global trends create an explicit USD impact line (positive/negative)
-  // - lobbyists/lawyers used in AUDIT are revealed only in final audit
-  // - infrastructure fee depends on continent + foreign active investments
-  // opts:
-  //   includeAuditExperts: boolean (default true) – if false, excludes AUDIT-used lobbyists/lawyers
+function calcSettlementFor(game, playerId){
+  // Deterministic settlement (test):
+  // - base USD from investments (may be modified by global trends at AUDIT)
+  // - electricity costs from mining farms (may be modified by global trends)
+  // - expert effects (steal base production)
 
-  const includeAuditExperts = opts?.includeAuditExperts !== false;
   const inv = game.inventory[playerId] || blankInventory();
+
   const y = game.year || 1;
   const globals = (game.trends?.byYear?.[String(y)]?.globals) || [];
 
@@ -484,230 +518,39 @@ function calcSettlementFor(game, playerId, opts){
   const hasTrend = (key)=> globals.some(t=>t.key===key);
   const isProtected = (key)=> protectedSet.has(key);
 
-  const roundThousands = (v)=>{
-    const n = Math.floor(Number(v||0));
-    if(!Number.isFinite(n)) return 0;
-    if(Math.abs(n) < 100) return 0;
-    return Math.round(n/1000)*1000;
-  };
+  // Base production
+  let base = inv.investments.reduce((s,c)=>s + Number(c.usdProduction||0), 0);
 
-  // ---- Investments (base + bonuses)
-  const invBase = (inv.investments||[]).reduce((s,c)=>s + Number(c.usdProduction||0), 0);
+  // Global trend modifiers for AUDIT (only if trend applies and player not protected)
+  if(hasTrend("ECONOMIC_CRISIS_NO_TRAD_BASE") && !isProtected("ECONOMIC_CRISIS_NO_TRAD_BASE")) base = 0;
+  if(hasTrend("TRAD_INV_DOUBLE_USD")) base = base * 2; // positive trend (no lawyer)
 
-  // Regional bonus: for each continent: 2/4/6 cards => +10k/+25k/+50k
-  const byCont = {};
-  for(const c of (inv.investments||[])){
-    const k = c.continent || "";
-    byCont[k] = (byCont[k]||0)+1;
-  }
-  const tierBonus = (cnt)=> (cnt>=6?50000:cnt>=4?25000:cnt>=2?10000:0);
-  let regionalBonus = 0;
-  const regionalItems = [];
-  for(const [k,cnt] of Object.entries(byCont)){
-    const b = tierBonus(cnt);
-    if(b){ regionalBonus += b; regionalItems.push({ continent:k, count:cnt, usd:b }); }
-  }
+  // Electricity costs
+  let electricity = inv.miningFarms.reduce((s,c)=>s + Number(c.electricityUSD||0), 0);
+  if(hasTrend("EXPENSIVE_ELECTRICITY") && !isProtected("EXPENSIVE_ELECTRICITY")) electricity = electricity * 2;
 
-  // Global bonus: for each type: 2/4/6 cards => +10k/+25k/+50k
-  const byType = {};
-  for(const c of (inv.investments||[])){
-    const t = c.type || c.investmentType || "";
-    byType[t] = (byType[t]||0)+1;
-  }
-  let globalBonus = 0;
-  const globalItems = [];
-  for(const [t,cnt] of Object.entries(byType)){
-    const b = tierBonus(cnt);
-    if(b){ globalBonus += b; globalItems.push({ type:t, count:cnt, usd:b }); }
-  }
+  // Build breakdown
+  const breakdown = [];
+  breakdown.push({ label:"Základní produkce (investice)", usd: base });
+  if(electricity){ breakdown.push({ label:"Elektřina (mining)", usd: -electricity }); }
 
-  const investmentsGross = invBase + regionalBonus + globalBonus;
-
-  // ---- Electricity
-  const electricityBase = (inv.miningFarms||[]).reduce((s,c)=>s + Number(c.electricityUSD||0), 0);
-
-  // ---- Infrastructure fee
-  const basePriceByYear = { 1:5000, 2:10000, 3:15000, 4:20000, 5:25000 };
-  const basePrice = basePriceByYear[y] || 25000;
-  const myContinent = (getPlayer(game, playerId)?.marketId || "");
-  // marketId format includes continent prefix in catalog; infer continent via catalog
-  const myMarket = CATALOG.markets.find(m=>m.marketId===myContinent);
-  const cont = myMarket?.continent || null;
-  let foreignInvCount = 0;
-  if(cont){
-    for(const p of game.players){
-      if(p.playerId===playerId) continue;
-      const oinv = game.inventory[p.playerId] || blankInventory();
-      foreignInvCount += (oinv.investments||[]).filter(c=>c.continent===cont).length;
-    }
-  }
-  const infraFee = foreignInvCount * basePrice;
-
-  // ---- Global trend USD impact line (explicit)
-  let trendsUsd = 0;
-  const trendItems = [];
-
-  // 1) expensive electricity => extra cost = -electricityBase
-  if(hasTrend("EXPENSIVE_ELECTRICITY") && !isProtected("EXPENSIVE_ELECTRICITY")){
-    const delta = -electricityBase;
-    trendsUsd += delta;
-    if(delta) trendItems.push({ key:"EXPENSIVE_ELECTRICITY", usd: delta });
-  } else if(hasTrend("EXPENSIVE_ELECTRICITY") && isProtected("EXPENSIVE_ELECTRICITY")){
-    // protection: show as +abs(delta)
-    const delta = +electricityBase;
-    trendsUsd += delta;
-    if(delta) trendItems.push({ key:"EXPENSIVE_ELECTRICITY_LAWYER", usd: delta });
-  }
-
-  // 7) trad inv double base => extra gain = +invBase
-  if(hasTrend("TRAD_INV_DOUBLE_USD")){
-    const delta = +invBase;
-    trendsUsd += delta;
-    if(delta) trendItems.push({ key:"TRAD_INV_DOUBLE_USD", usd: delta });
-  }
-
-  // 11) economic crisis => base becomes 0 (bonuses unaffected) => delta = -invBase
-  if(hasTrend("ECONOMIC_CRISIS_NO_TRAD_BASE") && !isProtected("ECONOMIC_CRISIS_NO_TRAD_BASE")){
-    const delta = -invBase;
-    trendsUsd += delta;
-    if(delta) trendItems.push({ key:"ECONOMIC_CRISIS_NO_TRAD_BASE", usd: delta });
-  } else if(hasTrend("ECONOMIC_CRISIS_NO_TRAD_BASE") && isProtected("ECONOMIC_CRISIS_NO_TRAD_BASE")){
-    const delta = +invBase;
-    trendsUsd += delta;
-    if(delta) trendItems.push({ key:"ECONOMIC_CRISIS_NO_TRAD_BASE_LAWYER", usd: delta });
-  }
-
-  // 8) antimonopoly => bonuses are null => delta = -(regional+global)
-  if(hasTrend("ANTIMONOPOLY_NO_BONUSES") && !isProtected("ANTIMONOPOLY_NO_BONUSES")){
-    const delta = -(regionalBonus + globalBonus);
-    trendsUsd += delta;
-    if(delta) trendItems.push({ key:"ANTIMONOPOLY_NO_BONUSES", usd: delta });
-  } else if(hasTrend("ANTIMONOPOLY_NO_BONUSES") && isProtected("ANTIMONOPOLY_NO_BONUSES")){
-    const delta = +(regionalBonus + globalBonus);
-    trendsUsd += delta;
-    if(delta) trendItems.push({ key:"ANTIMONOPOLY_NO_BONUSES_LAWYER", usd: delta });
-  }
-
-  // ---- Lobbyists & lawyers (AUDIT only)
-  let lobbyUsd = 0;
-  let lawyerUsd = 0;
-  const lobbyItems = [];
-  const lawyerItems = [];
-
-  const attacks = includeAuditExperts ? (game.settle?.attacks||[]) : [];
-  const shield = includeAuditExperts ? (game.settle?.shields?.[playerId]||null) : null;
-
-  // Compute per-victim damages so shield can pick max damage (highest absolute negative for victim)
-  const incoming = attacks.filter(a=>a.toPlayerId===playerId);
-  let maxAttack = null;
-  for(const a of incoming){
-    if(!maxAttack || (a.usd||0) > (maxAttack.usd||0)) maxAttack = a;
-  }
-
-  const shieldApplies = !!(shield?.active && !shield?.used && maxAttack);
-
-  for(const a of attacks){
-    const isNegated = shieldApplies && maxAttack && a.id===maxAttack.id;
-    // victim suffers -usd, thief attacker gains +usd; sabot does not gain
-    if(a.toPlayerId===playerId){
-      if(isNegated){
-        lawyerUsd += a.usd;
-        lawyerItems.push({ attackId:a.id, mode:a.mode, usd:+a.usd, note:"Štít aktivní" });
-      }else{
-        lobbyUsd -= a.usd;
-        lobbyItems.push({ attackId:a.id, mode:a.mode, usd:-a.usd, from:a.fromPlayerId, to:a.toPlayerId });
+  // Expert effects (steal base prod)
+  let effectsDelta = 0;
+  for(const e of (game.settle.effects||[])){
+    if(e.type==="STEAL_BASE_PRODUCTION"){
+      if(e.toPlayerId===playerId){
+        effectsDelta += e.usd;
+        breakdown.push({ label:`Krádež produkce (${e.cardId})`, usd: +e.usd });
       }
-    }
-    if(a.mode==="THIEF" && a.fromPlayerId===playerId){
-      if(isNegated){
-        lawyerUsd -= a.usd;
-        lawyerItems.push({ attackId:a.id, mode:a.mode, usd:-a.usd, note:"Štít negoval krádež" });
-      }else{
-        lobbyUsd += a.usd;
-        lobbyItems.push({ attackId:a.id, mode:a.mode, usd:+a.usd, from:a.fromPlayerId, to:a.toPlayerId });
+      if(e.fromPlayerId===playerId){
+        effectsDelta -= e.usd;
+        breakdown.push({ label:`Ztráta produkce (${e.cardId})`, usd: -e.usd });
       }
     }
   }
 
-  // ---- Crypto production summary (for UI only)
-  const cryptoProd = { BTC:0, ETH:0, LTC:0, SIA:0 };
-  for(const mf of (inv.miningFarms||[])){
-    const sym = mf.crypto;
-    if(sym && cryptoProd[sym]!=null) cryptoProd[sym] += Number(mf.cryptoProduction||0);
-  }
-  if(hasTrend("LOWER_DIFFICULTY")){
-    for(const sym of Object.keys(cryptoProd)) cryptoProd[sym] = cryptoProd[sym] * 2;
-  }
-  const cryptoUsd = {};
-  let cryptoProdUsdSum = 0;
-  for(const sym of ["BTC","ETH","LTC","SIA"]){
-    const rate = Number(game.crypto?.rates?.[sym]||0);
-    const usd = Number(cryptoProd[sym]||0) * rate;
-    cryptoUsd[sym] = usd;
-    cryptoProdUsdSum += usd;
-  }
-
-  // ---- Final numbers (rounded)
-  const investmentsLine = investmentsGross;
-  const electricityLine = -electricityBase;
-  const infraLine = -infraFee;
-
-  const settlementUsd = roundThousands(investmentsLine + electricityLine + trendsUsd + lobbyUsd + lawyerUsd + infraLine);
-
-  const summary = {
-    investmentsUsd: roundThousands(investmentsLine),
-    electricityUsd: roundThousands(electricityLine),
-    trendsUsd: roundThousands(trendsUsd),
-    lobbyUsd: roundThousands(lobbyUsd),
-    lawyerUsd: roundThousands(lawyerUsd),
-    infraUsd: roundThousands(infraLine),
-    totalUsd: settlementUsd,
-  };
-
-  const details = {
-    investments: {
-      baseUsd: roundThousands(invBase),
-      regionalBonusUsd: roundThousands(regionalBonus),
-      globalBonusUsd: roundThousands(globalBonus),
-      grossUsd: roundThousands(investmentsGross),
-      cards: (inv.investments||[]).map(c=>({ cardId:c.cardId, name:c.name, usdProduction:c.usdProduction, continent:c.continent, type:c.type||c.investmentType })),
-      regionalItems,
-      globalItems,
-    },
-    electricity: {
-      usd: roundThousands(electricityLine),
-      farms: (inv.miningFarms||[]).map(f=>({ cardId:f.cardId, name:f.name, crypto:f.crypto, cryptoProduction:f.cryptoProduction, electricityUSD:f.electricityUSD })),
-    },
-    trends: {
-      usd: roundThousands(trendsUsd),
-      items: trendItems,
-    },
-    lobbyists: {
-      usd: roundThousands(lobbyUsd),
-      items: lobbyItems,
-    },
-    lawyers: {
-      usd: roundThousands(lawyerUsd),
-      items: lawyerItems,
-      shieldActive: !!shield?.active,
-    },
-    infrastructure: {
-      usd: roundThousands(infraLine),
-      continent: cont,
-      foreignInvestments: foreignInvCount,
-      basePrice,
-    },
-    crypto: {
-      hasFarms: (inv.miningFarms||[]).length>0,
-      production: cryptoProd,
-      productionUsd: cryptoUsd,
-      productionUsdSum: cryptoProdUsdSum,
-      rates: game.crypto?.rates,
-      wallet: (getPlayer(game, playerId)?.wallet?.crypto)||{BTC:0,ETH:0,LTC:0,SIA:0},
-    }
-  };
-
-  return { settlementUsd, summary, details };
+  const settlementUsd = base - electricity + effectsDelta;
+  return { settlementUsd, breakdown };
 }
 
 
@@ -740,7 +583,14 @@ function canBack(game){
 
 function gmNext(game){
   if(game.phase==="BIZ"){
-    if(game.bizStep==="ML_BID"){ game.bizStep="MOVE"; return; }
+    if(game.bizStep==="ML_BID"){
+      game.bizStep="MOVE";
+      // Locks must reflect current positions at the start of MOVE.
+      rebuildMarketLocksFromPositions(game);
+      // Clear move entries for the new MOVE step (selection is still pending).
+      game.biz.move = {};
+      return;
+    }
     if(game.bizStep==="MOVE"){ game.bizStep="AUCTION_ENVELOPE"; return; }
     if(game.bizStep==="AUCTION_ENVELOPE"){ game.biz.auction.lobbyistPhaseActive = false; game.bizStep="ACQUIRE"; return; }
     if(game.bizStep==="ACQUIRE"){ game.phase="CRYPTO"; game.bizStep=null; return; }
@@ -1035,6 +885,45 @@ io.on("connection", (socket) => {
     if(game.phase!=="BIZ" || game.bizStep!=="MOVE") return ackErr(cb, "Not MOVE step", "BAD_STATE");
     if(game.biz.move[playerId]?.committed) return ackErr(cb, "Already moved", "ALREADY");
 
+    // Pandemic (global trend) restriction in MOVE.
+    // - If PANDEMIC_CONTINENT_LOCK is active AND player is NOT protected by lawyer:
+    //   - Player can only choose within their current continent.
+    //   - If another player is on the same continent, player must stay on the same market.
+    {
+      const y = String(game.year||1);
+      const globals = currentYearGlobals(game);
+      const pandemicActive = globals.some(t=>t.key==="PANDEMIC_CONTINENT_LOCK");
+      const protectedMap = (game.lawyer?.protections?.[playerId]?.[y]) || {};
+      const pandemicProtected = !!protectedMap["PANDEMIC_CONTINENT_LOCK"];
+      if(pandemicActive && !pandemicProtected){
+        const me = getPlayer(game, playerId);
+        const prev = me?.marketId || null;
+        const prevInfo = parseMarketId(prev);
+        const nextInfo = parseMarketId(marketId);
+
+        // Farms are outside continents -> considered "outside" during pandemic (locked unless protected).
+        if(nextInfo.kind==="FARM"){
+          return ackErr(cb, "Pandemie: bez Právníka nelze na mining farmy.", "PANDEMIC_LOCK");
+        }
+
+        if(prevInfo.kind==="MARKET" && nextInfo.kind==="MARKET"){
+          if(nextInfo.continent !== prevInfo.continent){
+            return ackErr(cb, "Pandemie: bez Právníka nelze opustit kontinent.", "PANDEMIC_LOCK");
+          }
+
+          // If another player is on the same continent, you must stay on the same market.
+          const otherOnContinent = game.players.some(p=>{
+            if(p.playerId===playerId) return false;
+            const info = parseMarketId(p.marketId);
+            return info.kind==="MARKET" && info.continent===prevInfo.continent;
+          });
+          if(otherOnContinent && marketId !== prev){
+            return ackErr(cb, "Pandemie: na kontinentu je jiný hráč – musíš zůstat na stejném trhu.", "PANDEMIC_LOCK");
+          }
+        }
+      }
+    }
+
     if(!(marketId in game.biz.marketLocks)) return ackErr(cb, "Unknown market", "BAD_INPUT");
     if(game.biz.marketLocks[marketId] && game.biz.marketLocks[marketId]!==playerId) return ackErr(cb, "Locked", "LOCKED");
 
@@ -1057,34 +946,17 @@ io.on("connection", (socket) => {
     if(!game) return ackErr(cb, "Game not found", "NOT_FOUND");
     if(game.phase!=="BIZ" || game.bizStep!=="AUCTION_ENVELOPE") return ackErr(cb, "Not AUCTION step", "BAD_STATE");
 
-    const wantsLobbyist = !!usedLobbyist;
-
-    // Lobbyist is a real expert card: usable once per year either in AUCTION or AUDIT.
-    if(wantsLobbyist){
-      const inv = game.inventory[playerId] || blankInventory();
-      const hasLobbyist = inv.experts.some(e=>e.functionKey==="STEAL_BASE_PROD" && !e.used);
-      if(!hasLobbyist) return ackErr(cb, "Nemáš lobbistu.", "NO_POWER");
-      // consume now to lock secrecy & prevent double-use
-      const ex = inv.experts.find(e=>e.functionKey==="STEAL_BASE_PROD" && !e.used);
-      ex.used = true;
-    }
-
     let val = bidUsd;
-    if(wantsLobbyist){
-      // Lobbyist choice is non-numeric; initial bid must be NULL.
-      val = null;
-    } else {
-      if(val===null) val=null;
-      else {
-        val = Math.floor(Number(val));
-        if(!Number.isFinite(val) || val<1000) return ackErr(cb, "Minimální nabídka je 1000 USD.", "BAD_INPUT");
-        if(val % 1000 !== 0) return ackErr(cb, "Pouze násobky 1000 USD.", "BAD_INPUT");
-      }
+    if(val===null) val=null;
+    else {
+      val = Number(val);
+      if(!Number.isFinite(val) || val<0) return ackErr(cb, "Invalid bid", "BAD_INPUT");
+      val = Math.floor(val);
     }
     game.biz.auction.entries[playerId] = {
       bidUsd: val,
       committed:true,
-      usedLobbyist: wantsLobbyist,
+      usedLobbyist: !!usedLobbyist,
       finalBidUsd: null,
       finalCommitted:false,
       ts: now()
@@ -1138,8 +1010,7 @@ io.on("connection", (socket) => {
     if(val===null) val = null;
     else {
       val = Math.floor(Number(val));
-      if(!Number.isFinite(val) || val<1000) return ackErr(cb, "Minimální nabídka je 1000 USD.", "BAD_INPUT");
-      if(val % 1000 !== 0) return ackErr(cb, "Pouze násobky 1000 USD.", "BAD_INPUT");
+      if(!Number.isFinite(val) || val<0) return ackErr(cb, "Invalid bid", "BAD_INPUT");
     }
 
     entry.finalBidUsd = val;
@@ -1285,65 +1156,45 @@ io.on("connection", (socket) => {
     broadcast(game);
   });
 
-  // AUDIT: Use lobbyist (Sabotér / Zloděj). Must be done BEFORE "Zahájit audit".
-  socket.on("use_lobbyist_audit", (payload, cb) => {
-    const { gameId, playerId, mode, targetPlayerId } = payload || {};
+  // Apply expert effect (steal base production for this year)
+  socket.on("apply_expert_effect", (payload, cb) => {
+    const { gameId, playerId, effect } = payload || {};
     const game = getGame(gameId);
     if(!game) return ackErr(cb, "Game not found", "NOT_FOUND");
     if(game.phase!=="SETTLE") return ackErr(cb, "Not SETTLE phase", "BAD_STATE");
-    if(game.settle.entries?.[playerId]?.committed) return ackErr(cb, "Audit už byl zahájen.", "ALREADY");
 
-    if(mode!=="SABOTEUR" && mode!=="THIEF") return ackErr(cb, "Bad mode", "BAD_INPUT");
-    if(!game.players.some(p=>p.playerId===targetPlayerId)) return ackErr(cb, "Bad target", "BAD_INPUT");
-    if(targetPlayerId===playerId) return ackErr(cb, "Nelze na sebe.", "BAD_INPUT");
+    const type = effect?.type;
+    if(type!=="STEAL_BASE_PRODUCTION") return ackErr(cb, "Unsupported effect", "BAD_INPUT");
+    const targetPlayerId = effect?.targetPlayerId;
+    const cardId = effect?.cardId;
 
     const inv = game.inventory[playerId] || blankInventory();
-    const hasLobbyist = inv.experts.some(e=>e.functionKey==="STEAL_BASE_PROD" && !e.used);
-    if(!hasLobbyist) return ackErr(cb, "Nemáš lobbistu.", "NO_POWER");
+    const has = inv.experts.some(e=>e.functionKey==="STEAL_BASE_PROD" && !e.used);
+    if(!has) return ackErr(cb, "Nemáš lobbistu (krádež).", "NO_POWER");
 
-    // consume lobbyist (once per year)
-    const ex = inv.experts.find(e=>e.functionKey==="STEAL_BASE_PROD" && !e.used);
-    ex.used = true;
-
-    // compute damage amount deterministically
+    // Card must belong to target (ownership does not change)
     const targetInv = game.inventory[targetPlayerId] || blankInventory();
-    const { summary: targetSummary } = calcSettlementFor(game, targetPlayerId, { includeAuditExperts:false });
-    const targetInvestmentsGross = Number(targetSummary?.investmentsUsd||0);
-    const invBase = (targetInv.investments||[]).reduce((s,c)=>s + Number(c.usdProduction||0), 0);
+    const card = targetInv.investments.find(c=>c.cardId===cardId);
+    if(!card) return ackErr(cb, "Cíl nevlastní tuto investici.", "BAD_INPUT");
 
-    let usd = 0;
-    if(mode==="SABOTEUR"){
-      usd = Math.max(0, Math.floor(targetInvestmentsGross * 0.5));
-    } else {
-      // THIEF: steal base production (no bonuses) of the best base-producing investment
-      let best = 0;
-      for(const c of (targetInv.investments||[])) best = Math.max(best, Number(c.usdProduction||0));
-      usd = Math.max(0, Math.floor(best));
-    }
+    const usd = Number(card.usdProduction||0);
 
-    const id = uuidv4();
-    game.settle.attacks.push({ id, mode, fromPlayerId: playerId, toPlayerId: targetPlayerId, usd, ts: now(), negated:false });
-    ackOk(cb, { id, usd });
-    broadcast(game);
-  });
+    // consume expert
+    const ex = inv.experts.find(e=>e.functionKey==="STEAL_BASE_PROD" && !e.used);
+    ex.used=true;
 
-  // AUDIT: Activate lawyer shield (one attack). Must be done BEFORE "Zahájit audit".
-  socket.on("activate_audit_shield", (payload, cb) => {
-    const { gameId, playerId } = payload || {};
-    const game = getGame(gameId);
-    if(!game) return ackErr(cb, "Game not found", "NOT_FOUND");
-    if(game.phase!=="SETTLE") return ackErr(cb, "Not SETTLE phase", "BAD_STATE");
-    if(game.settle.entries?.[playerId]?.committed) return ackErr(cb, "Audit už byl zahájen.", "ALREADY");
+    game.settle.effects.push({ type:"STEAL_BASE_PRODUCTION", fromPlayerId: targetPlayerId, toPlayerId: playerId, cardId, usd });
 
-    const inv = game.inventory[playerId] || blankInventory();
-    const hasLawyer = inv.experts.some(e=>e.functionKey==="LAWYER_TRENDS" && !e.used);
-    if(!hasLawyer) return ackErr(cb, "Nemáš právníka.", "NO_POWER");
-
-    // consume lawyer (once per year)
-    const ex = inv.experts.find(e=>e.functionKey==="LAWYER_TRENDS" && !e.used);
-    ex.used = true;
-
-    game.settle.shields[playerId] = { active:true, used:false, ts: now() };
+    // If some players already started audit, update their computed settlements so UI can show "Finální audit".
+    try{
+      for(const p of game.players){
+        const pid = p.playerId;
+        if(game.settle.entries?.[pid]?.committed){
+          const { settlementUsd, breakdown } = calcSettlementFor(game, pid);
+          game.settle.entries[pid] = { ...game.settle.entries[pid], settlementUsd, breakdown };
+        }
+      }
+    }catch(e){}
     ackOk(cb);
     broadcast(game);
   });
@@ -1355,9 +1206,9 @@ io.on("connection", (socket) => {
     if(!game) return ackErr(cb, "Game not found", "NOT_FOUND");
     if(game.phase!=="SETTLE") return ackErr(cb, "Not SETTLE phase", "BAD_STATE");
 
-    const { settlementUsd, summary, details } = calcSettlementFor(game, playerId, { includeAuditExperts:true });
-    game.settle.entries[playerId] = { settlementUsd, summary, details, committed:true, ts: now() };
-    ackOk(cb, { settlementUsd, summary });
+    const { settlementUsd, breakdown } = calcSettlementFor(game, playerId);
+    game.settle.entries[playerId] = { settlementUsd, breakdown, committed:true, ts: now() };
+    ackOk(cb, { settlementUsd });
     broadcast(game);
   });
 
@@ -1369,9 +1220,8 @@ io.on("connection", (socket) => {
       if(!game) return ackErr(cb, "Hra neexistuje.");
       const p = game.players.find(x=>x.playerId===playerId);
       if(!p) return ackErr(cb, "Neplatný hráč.");
-      // Wallet preview excludes AUDIT-used experts (lobbyists/shields)
-      const { settlementUsd, summary, details } = calcSettlementFor(game, playerId, { includeAuditExperts:false });
-      return ackOk(cb, { settlementUsd, summary, details });
+      const { settlementUsd, breakdown } = calcSettlementFor(game, playerId);
+      return ackOk(cb, { settlementUsd, breakdown });
     }catch(e){
       return ackErr(cb, "Chyba preview auditu.");
     }
