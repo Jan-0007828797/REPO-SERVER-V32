@@ -36,39 +36,6 @@ function shuffle(arr){ const a=[...arr]; for(let i=a.length-1;i>0;i--){ const j=
 function pickRandom(arr, k){ return shuffle(arr).slice(0,k); }
 
 const continents = ["EUROPE","ASIA","AFRICA","N_AMERICA","S_AMERICA","OCEANIA"];
-
-// Variant A (spec): market identity is (continent + market type).
-// Each continent has exactly 2 markets (Bible mapping).
-// Mining farms are separate board slots 1..3 (not on a continent).
-const CONTINENT_MARKET_TYPES = {
-  N_AMERICA: ["INDUSTRY", "MINING"],
-  S_AMERICA: ["MINING", "AGRO"],
-  EUROPE: ["INDUSTRY", "AGRO"],
-  AFRICA: ["MINING", "AGRO"],
-  ASIA: ["INDUSTRY", "MINING"],
-  OCEANIA: ["INDUSTRY", "AGRO"],
-};
-
-function mkMarketId(continent, type){
-  return `${continent}_${type}`;
-}
-
-function parseMarketId(marketId){
-  const id = String(marketId||"");
-  if(id.startsWith("FARM_")){
-    const slot = Number(id.split("_")[1]||0);
-    return { kind:"FARM", slot: Number.isFinite(slot)?slot:null };
-  }
-  const parts = id.split("_");
-  if(parts.length>=2){
-    const continent = parts.slice(0, parts.length-1).join("_");
-    const type = parts[parts.length-1];
-    if(continents.includes(continent) && ["INDUSTRY","MINING","AGRO"].includes(type)){
-      return { kind:"MARKET", continent, type };
-    }
-  }
-  return { kind:"UNKNOWN" };
-}
 const markets12 = Array.from({length:12}, (_,i)=>`M${String(i+1).padStart(2,"0")}`);
 
 // Simple catalog (test) – cards are identified by QR payload == cardId
@@ -191,13 +158,23 @@ function loadCryptoTrends(){
 
 
   const markets = [];
-  // 6 continents × 2 markets each (Bible mapping)
-  for(const continent of continents){
+  // Variant A: 6 continents × 2 markets (Bible mapping)
+  const CONTINENT_MARKET_TYPES = {
+    N_AMERICA: ["INDUSTRY","MINING"],
+    S_AMERICA: ["MINING","AGRO"],
+    EUROPE: ["INDUSTRY","AGRO"],
+    AFRICA: ["MINING","AGRO"],
+    ASIA: ["INDUSTRY","MINING"],
+    OCEANIA: ["INDUSTRY","AGRO"],
+  };
+  const mkMarketId = (continent, type) => `${continent}_${type}`;
+
+  for (const continent of continents){
     const types = CONTINENT_MARKET_TYPES[continent] || [];
-    for(const type of types){
+    for (const type of types){
       markets.push({
         marketId: mkMarketId(continent, type),
-        label: `${continent} ${type}`,
+        name: `${continent} ${type}`,
         continent,
         type, // "INDUSTRY" | "MINING" | "AGRO"
         kind: "MARKET",
@@ -205,11 +182,11 @@ function loadCryptoTrends(){
     }
   }
 
-  // 3 mining farm board slots (not on continents)
-  for(let i=1;i<=3;i++){
+  // 3 mining farm board slots (not on a continent)
+  for (let i=1;i<=3;i++){
     markets.push({
       marketId: `FARM_${i}`,
-      label: `Farma ${i}`,
+      name: `Farma ${i}`,
       continent: null,
       type: "FARM",
       kind: "FARM",
@@ -470,7 +447,7 @@ function resetStepData(game){
   game.settle.effects = [];
   game.settle.entries = {};
   game.crypto.entries = {};
-  // Rebuilt when entering MOVE (must reflect current player positions).
+  // market locks persist within year, but we rebuild for move step
   game.biz.marketLocks = Object.fromEntries(CATALOG.markets.map(m=>[m.marketId, null]));
 }
 
@@ -491,6 +468,7 @@ function startNewYear(game){
   // Trends are activated automatically at year start; players view them in ML intro modal.
   game.bizStep = "ML_BID";
   resetStepData(game);
+  rebuildMarketLocksFromPositions(game);
 
   // Apply trend triggers at the moment the year starts (previously happened in the removed "TRENDS" step)
   applyTrendTriggers_OnTrendsToML(game);
@@ -583,14 +561,7 @@ function canBack(game){
 
 function gmNext(game){
   if(game.phase==="BIZ"){
-    if(game.bizStep==="ML_BID"){
-      game.bizStep="MOVE";
-      // Locks must reflect current positions at the start of MOVE.
-      rebuildMarketLocksFromPositions(game);
-      // Clear move entries for the new MOVE step (selection is still pending).
-      game.biz.move = {};
-      return;
-    }
+    if(game.bizStep==="ML_BID"){ game.bizStep="MOVE"; rebuildMarketLocksFromPositions(game); return; }
     if(game.bizStep==="MOVE"){ game.bizStep="AUCTION_ENVELOPE"; return; }
     if(game.bizStep==="AUCTION_ENVELOPE"){ game.biz.auction.lobbyistPhaseActive = false; game.bizStep="ACQUIRE"; return; }
     if(game.bizStep==="ACQUIRE"){ game.phase="CRYPTO"; game.bizStep=null; return; }
@@ -611,7 +582,7 @@ function gmNext(game){
 function gmBack(game){
   if(game.phase==="BIZ"){
     if(game.bizStep==="MOVE"){ game.bizStep="ML_BID"; return; }
-    if(game.bizStep==="AUCTION_ENVELOPE"){ game.bizStep="MOVE"; return; }
+    if(game.bizStep==="AUCTION_ENVELOPE"){ game.bizStep="MOVE"; rebuildMarketLocksFromPositions(game); return; }
     if(game.bizStep==="ACQUIRE"){ game.biz.auction.lobbyistPhaseActive = false; game.bizStep="AUCTION_ENVELOPE"; return; }
   } else if(game.phase==="CRYPTO"){
     game.phase="BIZ"; game.bizStep="ACQUIRE"; return;
@@ -884,45 +855,6 @@ io.on("connection", (socket) => {
     if(!game) return ackErr(cb, "Game not found", "NOT_FOUND");
     if(game.phase!=="BIZ" || game.bizStep!=="MOVE") return ackErr(cb, "Not MOVE step", "BAD_STATE");
     if(game.biz.move[playerId]?.committed) return ackErr(cb, "Already moved", "ALREADY");
-
-    // Pandemic (global trend) restriction in MOVE.
-    // - If PANDEMIC_CONTINENT_LOCK is active AND player is NOT protected by lawyer:
-    //   - Player can only choose within their current continent.
-    //   - If another player is on the same continent, player must stay on the same market.
-    {
-      const y = String(game.year||1);
-      const globals = currentYearGlobals(game);
-      const pandemicActive = globals.some(t=>t.key==="PANDEMIC_CONTINENT_LOCK");
-      const protectedMap = (game.lawyer?.protections?.[playerId]?.[y]) || {};
-      const pandemicProtected = !!protectedMap["PANDEMIC_CONTINENT_LOCK"];
-      if(pandemicActive && !pandemicProtected){
-        const me = getPlayer(game, playerId);
-        const prev = me?.marketId || null;
-        const prevInfo = parseMarketId(prev);
-        const nextInfo = parseMarketId(marketId);
-
-        // Farms are outside continents -> considered "outside" during pandemic (locked unless protected).
-        if(nextInfo.kind==="FARM"){
-          return ackErr(cb, "Pandemie: bez Právníka nelze na mining farmy.", "PANDEMIC_LOCK");
-        }
-
-        if(prevInfo.kind==="MARKET" && nextInfo.kind==="MARKET"){
-          if(nextInfo.continent !== prevInfo.continent){
-            return ackErr(cb, "Pandemie: bez Právníka nelze opustit kontinent.", "PANDEMIC_LOCK");
-          }
-
-          // If another player is on the same continent, you must stay on the same market.
-          const otherOnContinent = game.players.some(p=>{
-            if(p.playerId===playerId) return false;
-            const info = parseMarketId(p.marketId);
-            return info.kind==="MARKET" && info.continent===prevInfo.continent;
-          });
-          if(otherOnContinent && marketId !== prev){
-            return ackErr(cb, "Pandemie: na kontinentu je jiný hráč – musíš zůstat na stejném trhu.", "PANDEMIC_LOCK");
-          }
-        }
-      }
-    }
 
     if(!(marketId in game.biz.marketLocks)) return ackErr(cb, "Unknown market", "BAD_INPUT");
     if(game.biz.marketLocks[marketId] && game.biz.marketLocks[marketId]!==playerId) return ackErr(cb, "Locked", "LOCKED");
