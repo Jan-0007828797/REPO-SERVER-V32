@@ -157,12 +157,30 @@ function loadCryptoTrends(){
   const cryptoTrends = loadCryptoTrends();
 
 
-  const markets = markets12.map((m, idx)=>({
-    marketId: m,
-    label: `Trh ${idx+1}`,
-    continent: continents[idx % continents.length],
-    type: ["AGRO","INDUSTRY","MINING","ENERGY","TECH","LOGISTICS"][idx % 6]
-  }));
+  // Markets (Výběr trhu): per Bible each continent exposes exactly 2 market types
+  // (Průmysl, Těžba, Zemědělství). Keep only these three types in the catalog.
+  // IMPORTANT: marketIds are stable and encode continent + type.
+  const MARKET_TYPES_BY_CONTINENT = {
+    N_AMERICA: ["INDUSTRY", "MINING"],
+    S_AMERICA: ["MINING", "AGRI"],
+    EUROPE: ["INDUSTRY", "AGRI"],
+    AFRICA: ["MINING", "AGRI"],
+    ASIA: ["INDUSTRY", "MINING"],
+    OCEANIA: ["INDUSTRY", "AGRI"],
+  };
+
+  const markets = [];
+  for (const cont of continents) {
+    const types = MARKET_TYPES_BY_CONTINENT[cont] || [];
+    for (const t of types) {
+      markets.push({
+        marketId: `${cont}_${t}`,
+        label: `${cont}_${t}`,
+        continent: cont,
+        type: t,
+      });
+    }
+  }
 
   return { investments, miningFarms, experts, globalTrends, regionalTrends, cryptoTrends, continents, markets };
 })();
