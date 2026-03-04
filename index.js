@@ -514,6 +514,7 @@ function calcSettlementFor(game, playerId){
 
   // Expert effects (steal base prod)
   let effectsDelta = 0;
+  const lobbyistImpacts = [];
   for(const e of (game.settle.effects||[])){
     if(e.type==="STEAL_BASE_PRODUCTION"){
       if(e.toPlayerId===playerId){
@@ -525,10 +526,62 @@ function calcSettlementFor(game, playerId){
         breakdown.push({ label:`Ztráta produkce (${e.cardId})`, usd: -e.usd });
       }
     }
+
+    // Audit lobbyist effects (V33): sabotage/steal
+    if(e.type==="AUDIT_LOBBYIST_STEAL"){
+      if(e.toPlayerId===playerId){
+        effectsDelta += e.usd;
+        breakdown.push({ label:`Lobbista – zloděj (+)`, usd: +e.usd });
+      }
+      if(e.fromPlayerId===playerId){
+        effectsDelta -= e.usd;
+        lobbyistImpacts.push({ usd: -e.usd, label:`Lobbista – zloděj (−)` });
+      }
+    }
+    if(e.type==="AUDIT_LOBBYIST_SABOTAGE"){
+      if(e.targetPlayerId===playerId){
+        lobbyistImpacts.push({ usd: -Math.abs(Number(e.usd||0)), label:`Lobbista – sabotér (−)` });
+        effectsDelta -= Math.abs(Number(e.usd||0));
+      }
+    }
+  }
+
+  // Single-use shield (LAWYER) against the biggest lobbyist impact in this audit.
+  const shieldActive = !!(game.lawyer?.auditShield?.[playerId]?.[String(y)]);
+  if(shieldActive && lobbyistImpacts.length){
+    let worst = lobbyistImpacts[0];
+    for(const x of lobbyistImpacts){
+      if(Number(x.usd) < Number(worst.usd)) worst = x;
+    }
+    const refund = Math.abs(Number(worst.usd||0));
+    if(refund>0){
+      effectsDelta += refund;
+      breakdown.push({ label:`Právník – štít (+)`, usd: +refund });
+    }
   }
 
   const settlementUsd = base - electricity + effectsDelta;
   return { settlementUsd, breakdown };
+}
+
+function roundDownToHundreds(n){
+  const x = Math.floor(Number(n||0));
+  if(!Number.isFinite(x)) return 0;
+  if(x < 100) return 0;
+  return Math.floor(x / 100) * 100;
+}
+
+function sumTradBase(inv){
+  return (inv?.investments||[]).reduce((s,c)=>s + Number(c.usdProduction||0), 0);
+}
+
+function maxTradBase(inv){
+  let m = 0;
+  for(const c of (inv?.investments||[])){
+    const v = Number(c.usdProduction||0);
+    if(v > m) m = v;
+  }
+  return m;
 }
 
 
@@ -1127,6 +1180,81 @@ io.on("connection", (socket) => {
         }
       }
     }catch(e){}
+    ackOk(cb);
+    broadcast(game);
+  });
+
+  // V33: Audit lobbyist actions (sabotage / steal) – consumes one unused STEAL_BASE_PROD expert.
+  socket.on("apply_audit_lobbyist", (payload, cb) => {
+    const { gameId, playerId, action, targetPlayerId } = payload || {};
+    const game = getGame(gameId);
+    if(!game) return ackErr(cb, "Game not found", "NOT_FOUND");
+    if(game.phase!=="SETTLE") return ackErr(cb, "Not SETTLE phase", "BAD_STATE");
+
+    const inv = game.inventory[playerId] || blankInventory();
+    const ex = inv.experts.find(e=>e.functionKey==="STEAL_BASE_PROD" && !e.used);
+    if(!ex) return ackErr(cb, "Nemáš lobbistu.", "NO_POWER");
+    const targetInv = game.inventory[targetPlayerId] || blankInventory();
+
+    let usd = 0;
+    if(action==="AUDIT_LOBBYIST_SABOTAGE"){
+      usd = roundDownToHundreds(0.5 * sumTradBase(targetInv));
+      game.settle.effects.push({ type:"AUDIT_LOBBYIST_SABOTAGE", fromPlayerId: playerId, targetPlayerId, usd });
+    } else if(action==="AUDIT_LOBBYIST_STEAL"){
+      usd = roundDownToHundreds(maxTradBase(targetInv));
+      game.settle.effects.push({ type:"AUDIT_LOBBYIST_STEAL", fromPlayerId: targetPlayerId, toPlayerId: playerId, usd });
+    } else {
+      return ackErr(cb, "Bad action", "BAD_INPUT");
+    }
+
+    // consume lobbyist
+    ex.used = true;
+
+    // refresh computed settlements for already committed entries
+    try{
+      for(const p of game.players){
+        const pid = p.playerId;
+        if(game.settle.entries?.[pid]?.committed){
+          const { settlementUsd, breakdown } = calcSettlementFor(game, pid);
+          game.settle.entries[pid] = { ...game.settle.entries[pid], settlementUsd, breakdown };
+        }
+      }
+    }catch(e){}
+
+    ackOk(cb, { usd });
+    broadcast(game);
+  });
+
+  // V33: Activate audit shield (LAWYER) – consumes one unused LAWYER_TRENDS expert.
+  socket.on("activate_audit_shield", (payload, cb) => {
+    const { gameId, playerId } = payload || {};
+    const game = getGame(gameId);
+    if(!game) return ackErr(cb, "Game not found", "NOT_FOUND");
+    if(game.phase!=="SETTLE") return ackErr(cb, "Not SETTLE phase", "BAD_STATE");
+
+    const inv = game.inventory[playerId] || blankInventory();
+    const ex = inv.experts.find(e=>e.functionKey==="LAWYER_TRENDS" && !e.used);
+    if(!ex) return ackErr(cb, "Nemáš právníka.", "NO_POWER");
+
+    const y = String(game.year||1);
+    game.lawyer = game.lawyer || {};
+    game.lawyer.auditShield = game.lawyer.auditShield || {};
+    game.lawyer.auditShield[playerId] = game.lawyer.auditShield[playerId] || {};
+    game.lawyer.auditShield[playerId][y] = true;
+
+    ex.used = true;
+
+    // refresh computed settlements for already committed entries
+    try{
+      for(const p of game.players){
+        const pid = p.playerId;
+        if(game.settle.entries?.[pid]?.committed){
+          const { settlementUsd, breakdown } = calcSettlementFor(game, pid);
+          game.settle.entries[pid] = { ...game.settle.entries[pid], settlementUsd, breakdown };
+        }
+      }
+    }catch(e){}
+
     ackOk(cb);
     broadcast(game);
   });
