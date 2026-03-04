@@ -614,7 +614,11 @@ function canBack(game){
 
 function gmNext(game){
   if(game.phase==="BIZ"){
-    if(game.bizStep==="ML_BID"){ game.bizStep="MOVE"; rebuildMarketLocksFromPositions(game); return; }
+    if(game.bizStep==="ML_BID"){
+      game.bizStep="MOVE";
+      rebuildMarketLocksFromPositions(game);
+      return;
+    }
     if(game.bizStep==="MOVE"){ game.bizStep="AUCTION_ENVELOPE"; return; }
     if(game.bizStep==="AUCTION_ENVELOPE"){ game.biz.auction.lobbyistPhaseActive = false; game.bizStep="ACQUIRE"; return; }
     if(game.bizStep==="ACQUIRE"){ game.phase="CRYPTO"; game.bizStep=null; return; }
