@@ -1,1 +1,1 @@
-Railway: root=SERVER, start=npm start. Health: /health
+WEB v2.5. Set NEXT_PUBLIC_SERVER_URL on Vercel.
