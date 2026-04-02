@@ -244,6 +244,7 @@ function newGame({ gmName, yearsTotal, maxPlayers }){
     year: 0,
     phase: null,      // "BIZ"|"CRYPTO"|"SETTLE"
     bizStep: null,    // "ML_BID"|"MOVE"|"AUCTION_ENVELOPE"|"ACQUIRE"
+    countdown: { active:false, scope:null, startedAt:null, endsAt:null, durationMs:45000 },
 
     // committed values – purely for display & consistency
     biz: {
@@ -289,6 +290,122 @@ function newGame({ gmName, yearsTotal, maxPlayers }){
 function getActivePlayerIds(game){
   return (game.players||[]).filter(p=>p.role!=="GM").map(p=>p.playerId);
 }
+
+
+function currentCountdownScope(game){
+  if(game.phase==="BIZ" && game.bizStep==="ML_BID") return "ML_BID";
+  if(game.phase==="BIZ" && game.bizStep==="MOVE") return "MOVE";
+  if(game.phase==="BIZ" && game.bizStep==="AUCTION_ENVELOPE") return game.biz?.auction?.lobbyistPhaseActive ? "AUCTION_FINAL" : "AUCTION_ENVELOPE";
+  if(game.phase==="CRYPTO") return "CRYPTO";
+  return null;
+}
+
+function stopCountdown(game){
+  game.countdown = { active:false, scope:null, startedAt:null, endsAt:null, durationMs:45000 };
+}
+
+function startCountdownIfNeeded(game, scope, durationMs=45000){
+  if(!scope) return;
+  if(scope !== currentCountdownScope(game)) return;
+  if(game.countdown?.active && game.countdown.scope===scope) return;
+  const t = now();
+  game.countdown = { active:true, scope, startedAt:t, endsAt:t+durationMs, durationMs };
+}
+
+function applyTimeoutDefaults(game){
+  const scope = game.countdown?.scope;
+  if(!scope) return false;
+  const targets = getActivePlayerIds(game);
+  let changed = false;
+
+  if(scope==="ML_BID"){
+    for(const pid of targets){
+      if(game.biz.mlBids?.[pid]?.committed) continue;
+      game.biz.mlBids[pid] = { amountUsd:null, committed:true, ts: now(), auto:true };
+      markCommitted(game, pid, { kind:"ML_BID", auto:true, amountUsd:null });
+      changed = true;
+    }
+    finalizeMlResult(game);
+  }
+
+  if(scope==="MOVE"){
+    for(const pid of targets){
+      if(game.biz.move?.[pid]?.committed) continue;
+      const currentMarketId = getPlayer(game, pid)?.marketId || null;
+      game.biz.move[pid] = { marketId: currentMarketId, committed:true, ts: now(), auto:true };
+      markCommitted(game, pid, { kind:"MOVE", auto:true, marketId: currentMarketId });
+      changed = true;
+    }
+  }
+
+  if(scope==="AUCTION_ENVELOPE"){
+    for(const pid of targets){
+      const entry = game.biz.auction.entries?.[pid];
+      if(entry?.committed) continue;
+      game.biz.auction.entries[pid] = { bidUsd:null, committed:true, usedLobbyist:false, finalBidUsd:null, finalCommitted:false, ts: now(), auto:true };
+      markCommitted(game, pid, { kind:"AUCTION_ENVELOPE", auto:true, bidUsd:null });
+      changed = true;
+    }
+    const entries = game.biz.auction.entries || {};
+    const allCommitted = targets.every(pid => entries[pid]?.committed);
+    if(allCommitted){
+      const anyLobby = Object.values(entries).some(v=>v?.usedLobbyist);
+      if(anyLobby) game.biz.auction.lobbyistPhaseActive = true;
+    }
+    finalizeAuctionResult(game);
+  }
+
+  if(scope==="AUCTION_FINAL"){
+    for(const pid of targets){
+      const entry = game.biz.auction.entries?.[pid];
+      if(!entry?.usedLobbyist || entry?.finalCommitted) continue;
+      entry.finalBidUsd = entry.bidUsd==null ? null : Number(entry.bidUsd);
+      entry.finalCommitted = true;
+      entry.auto = true;
+      markCommitted(game, pid, { kind:"AUCTION_FINAL", auto:true, finalBidUsd: entry.finalBidUsd });
+      changed = true;
+    }
+    finalizeAuctionResult(game);
+  }
+
+  if(scope==="CRYPTO"){
+    for(const pid of targets){
+      if(game.crypto.entries?.[pid]?.committed) continue;
+      game.crypto.entries[pid] = { deltas:{ BTC:0, ETH:0, LTC:0, SIA:0 }, deltaUsd:0, committed:true, ts: now(), auto:true };
+      markCommitted(game, pid, { kind:"CRYPTO", auto:true, deltaUsd:0 });
+      changed = true;
+    }
+  }
+
+  stopCountdown(game);
+  return changed;
+}
+
+function maybeStopCountdownWhenComplete(game){
+  if(!game?.countdown?.active) return;
+  const targets = getActivePlayerIds(game);
+  const scope = game.countdown.scope;
+  if(scope==="ML_BID" && targets.every(pid => game.biz.mlBids?.[pid]?.committed)) return stopCountdown(game);
+  if(scope==="MOVE" && targets.every(pid => game.biz.move?.[pid]?.committed)) return stopCountdown(game);
+  if(scope==="AUCTION_ENVELOPE" && targets.every(pid => game.biz.auction.entries?.[pid]?.committed)) return stopCountdown(game);
+  if(scope==="AUCTION_FINAL"){
+    const needFinal = targets.filter(pid => game.biz.auction.entries?.[pid]?.usedLobbyist);
+    if(needFinal.every(pid => game.biz.auction.entries?.[pid]?.finalCommitted)) return stopCountdown(game);
+  }
+  if(scope==="CRYPTO" && targets.every(pid => game.crypto.entries?.[pid]?.committed)) return stopCountdown(game);
+}
+
+function tickCountdowns(){
+  for(const game of games.values()){
+    const cd = game?.countdown;
+    if(!cd?.active || !cd.endsAt) continue;
+    if(now() >= cd.endsAt){
+      applyTimeoutDefaults(game);
+      broadcast(game);
+    }
+  }
+}
+setInterval(tickCountdowns, 1000);
 
 function finalizeMlResult(game){
   const players = getActivePlayerIds(game);
@@ -392,11 +509,13 @@ function gamePublic(game, viewerPlayerId){
       entries: viewerPlayerId && game.crypto.entries?.[viewerPlayerId] ? { [viewerPlayerId]: game.crypto.entries[viewerPlayerId] } : {},
     },
     settle: { ...game.settle, entries: settleEntries },
+    countdown: game.countdown?.active ? { ...game.countdown, remainingMs: Math.max(0, Number(game.countdown.endsAt||0) - now()) } : { active:false, scope:null, startedAt:null, endsAt:null, durationMs:45000, remainingMs:0 },
     meta: { currentPhaseKey: currentPhaseKey(game) }
   };
 }
 
 function broadcast(game){
+  maybeStopCountdownWhenComplete(game);
   const room = io.sockets.adapter.rooms.get(`game:${game.gameId}`);
   if(!room){ return; }
   for(const socketId of room){
@@ -546,6 +665,7 @@ function rebuildMarketLocksFromPositions(game){
 
 function startNewYear(game){
   resetCurrentPhaseActions(game);
+  stopCountdown(game);
   game.year += 1;
   game.phase = "BIZ";
   // Trends are activated automatically at year start; players view them in ML intro modal.
@@ -697,6 +817,7 @@ function canBack(game){
 
 function gmNext(game){
   resetCurrentPhaseActions(game);
+  stopCountdown(game);
   if(game.phase==="BIZ"){
     if(game.bizStep==="ML_BID"){
       game.bizStep="MOVE";
@@ -722,6 +843,7 @@ function gmNext(game){
 
 function gmBack(game){
   resetCurrentPhaseActions(game);
+  stopCountdown(game);
   if(game.phase==="BIZ"){
     if(game.bizStep==="MOVE"){ game.bizStep="ML_BID"; return; }
     if(game.bizStep==="AUCTION_ENVELOPE"){ game.bizStep="MOVE"; rebuildMarketLocksFromPositions(game); return; }
@@ -996,6 +1118,7 @@ io.on("connection", (socket) => {
       val = Math.floor(val);
     }
     game.biz.mlBids[playerId] = { amountUsd: val, committed:true, ts: now() };
+    startCountdownIfNeeded(game, "ML_BID");
     markCommitted(game, playerId, { kind: "ML_BID" });
     finalizeMlResult(game);
     ackOk(cb, { result: game.biz.mlResult || null });
@@ -1022,6 +1145,7 @@ io.on("connection", (socket) => {
     game.biz.marketLocks[marketId] = playerId;
     const p = getPlayer(game, playerId); if(p) p.marketId = marketId;
     game.biz.move[playerId] = { marketId, committed:true, ts: now() };
+    startCountdownIfNeeded(game, "MOVE");
     markCommitted(game, playerId, { kind: "MOVE", marketId });
 
     ackOk(cb);
@@ -1053,6 +1177,7 @@ io.on("connection", (socket) => {
       finalCommitted:false,
       ts: now()
     };
+    startCountdownIfNeeded(game, "AUCTION_ENVELOPE");
 
     // Auto-start lobbyist subphase when everyone committed AND someone used lobbyist.
     // This keeps the game flowing and preserves secrecy for other players.
@@ -1061,7 +1186,7 @@ io.on("connection", (socket) => {
       const allCommitted = game.players.every(p=>entries[p.playerId]?.committed);
       if(allCommitted){
         const anyLobby = Object.values(entries).some(v=>v?.usedLobbyist);
-        if(anyLobby) game.biz.auction.lobbyistPhaseActive = true;
+        if(anyLobby){ game.biz.auction.lobbyistPhaseActive = true; stopCountdown(game); }
       }
     }catch{}
 
@@ -1086,6 +1211,7 @@ io.on("connection", (socket) => {
     if(!anyLobby) return ackErr(cb, "Nikdo nepoužil lobbistu.", "GUARD_FAIL");
 
     game.biz.auction.lobbyistPhaseActive = true;
+    stopCountdown(game);
     ackOk(cb);
     broadcast(game);
   });
@@ -1111,6 +1237,7 @@ io.on("connection", (socket) => {
 
     entry.finalBidUsd = val;
     entry.finalCommitted = true;
+    startCountdownIfNeeded(game, "AUCTION_FINAL");
     markCommitted(game, playerId, { kind: "AUCTION_FINAL" });
     finalizeAuctionResult(game);
     ackOk(cb, { result: game.biz.auction?.result || null });
@@ -1255,6 +1382,7 @@ io.on("connection", (socket) => {
       deltaUsd += -d * Number(game.crypto.rates[sym]||0); // buying positive costs USD (negative delta), selling negative gives USD
     }
     game.crypto.entries[playerId] = { deltas: clean, deltaUsd, committed:true, ts: now() };
+    startCountdownIfNeeded(game, "CRYPTO");
     markCommitted(game, playerId, { kind: "CRYPTO" });
     ackOk(cb, { deltaUsd });
     broadcast(game);
