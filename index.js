@@ -277,7 +277,8 @@ function newGame({ gmName, yearsTotal, maxPlayers }){
 
     reconnectTokens: {},
     phaseActions: {},
-    countdown: { active:false, key:null, durationMs:COUNTDOWN_MS, startedAt:null, endsAt:null, triggerPlayerId:null }
+    countdown: { active:false, key:null, durationMs:COUNTDOWN_MS, startedAt:null, endsAt:null, triggerPlayerId:null },
+    rankings: { mlVisible:false, ml:[], auctionVisible:false, auction:[] }
   };
 
   // init reveal state
@@ -414,6 +415,7 @@ function applyCountdownTimeout(game){
       markCommitted(game, p.playerId, { kind: "ML_BID", auto:true });
     }
     finalizeMlResult(game);
+    refreshRankings(game);
     stopCountdown(game);
     return;
   }
@@ -448,7 +450,8 @@ function applyCountdownTimeout(game){
         game.biz.auction.lobbyistPhaseActive = true;
         startCountdown(game, null, true);
       } else {
-        finalizeAuctionResult(game);
+        refreshRankings(game);
+    finalizeAuctionResult(game);
         stopCountdown(game);
       }
       return;
@@ -462,6 +465,7 @@ function applyCountdownTimeout(game){
       entry.autoFinal = true;
       markCommitted(game, p.playerId, { kind: "AUCTION_FINAL", auto:true });
     }
+    refreshRankings(game);
     finalizeAuctionResult(game);
     stopCountdown(game);
     return;
@@ -479,6 +483,62 @@ function applyCountdownTimeout(game){
       markCommitted(game, p.playerId, { kind: "CRYPTO", auto:true });
     }
     stopCountdown(game);
+  }
+}
+
+function clearRankings(game){
+  if(!game.rankings) game.rankings = { mlVisible:false, ml:[], auctionVisible:false, auction:[] };
+  game.rankings.mlVisible = false;
+  game.rankings.ml = [];
+  game.rankings.auctionVisible = false;
+  game.rankings.auction = [];
+}
+
+function buildMlRanking(game){
+  return getActivePlayers(game)
+    .map(p=>({
+      playerId:p.playerId,
+      name:p.name,
+      amount:Number(game.biz?.mlBids?.[p.playerId]?.amountUsd||0),
+      ts:Number(game.biz?.mlBids?.[p.playerId]?.ts||Number.MAX_SAFE_INTEGER)
+    }))
+    .sort((a,b)=> (b.amount-a.amount) || (a.ts-b.ts))
+    .map((x,i)=>({ rank:i+1, playerId:x.playerId, name:x.name }));
+}
+
+function buildAuctionRanking(game){
+  const entries = game.biz?.auction?.entries || {};
+  return getActivePlayers(game)
+    .map(p=>{
+      const e = entries[p.playerId] || {};
+      const amount = e.finalCommitted ? Number(e.finalBidUsd||0) : Number(e.bidUsd||0);
+      const ts = e.finalCommitted ? Number(e.finalTs||e.ts||Number.MAX_SAFE_INTEGER) : Number(e.ts||Number.MAX_SAFE_INTEGER);
+      return { playerId:p.playerId, name:p.name, amount, ts };
+    })
+    .sort((a,b)=> (b.amount-a.amount) || (a.ts-b.ts))
+    .map((x,i)=>({ rank:i+1, playerId:x.playerId, name:x.name }));
+}
+
+function refreshRankings(game){
+  if(!game.rankings) game.rankings = { mlVisible:false, ml:[], auctionVisible:false, auction:[] };
+  if(game.phase==="BIZ" && game.bizStep==="ML_BID") {
+    const players = getActivePlayers(game);
+    const allCommitted = players.length>0 && players.every(p=>game.biz?.mlBids?.[p.playerId]?.committed);
+    game.rankings.mlVisible = allCommitted;
+    game.rankings.ml = allCommitted ? buildMlRanking(game) : [];
+  }
+  if(game.phase==="BIZ" && game.bizStep==="AUCTION_ENVELOPE") {
+    const players = getActivePlayers(game);
+    const entries = game.biz?.auction?.entries || {};
+    let allCommitted = false;
+    if(game.biz?.auction?.lobbyistPhaseActive){
+      const lobbyists = players.filter(p=>!!entries[p.playerId]?.usedLobbyist);
+      allCommitted = lobbyists.length>0 ? lobbyists.every(p=>entries[p.playerId]?.finalCommitted) : players.every(p=>entries[p.playerId]?.committed);
+    } else {
+      allCommitted = players.length>0 && players.every(p=>entries[p.playerId]?.committed);
+    }
+    game.rankings.auctionVisible = allCommitted;
+    game.rankings.auction = allCommitted ? buildAuctionRanking(game) : [];
   }
 }
 
@@ -549,6 +609,7 @@ function gamePublic(game, viewerPlayerId){
       const remainingMs = game.countdown.active && game.countdown.endsAt ? Math.max(0, Number(game.countdown.endsAt) - now()) : 0;
       return { ...game.countdown, remainingMs };
     })(),
+    rankings: game.rankings || { mlVisible:false, ml:[], auctionVisible:false, auction:[] },
     meta: { currentPhaseKey: currentPhaseKey(game) }
   };
 }
@@ -679,6 +740,7 @@ function applyTrendTriggers_OnTrendsToML(game){
 
 function resetStepData(game){
   stopCountdown(game);
+  clearRankings(game);
   game.biz.mlBids = {};
   game.biz.mlResult = null;
   game.biz.move = {};
@@ -704,6 +766,7 @@ function rebuildMarketLocksFromPositions(game){
 
 function startNewYear(game){
   stopCountdown(game);
+  clearRankings(game);
   resetCurrentPhaseActions(game);
   game.year += 1;
   game.phase = "BIZ";
@@ -856,6 +919,7 @@ function canBack(game){
 
 function gmNext(game){
   stopCountdown(game);
+  clearRankings(game);
   resetCurrentPhaseActions(game);
   if(game.phase==="BIZ"){
     if(game.bizStep==="ML_BID"){
@@ -882,6 +946,7 @@ function gmNext(game){
 
 function gmBack(game){
   stopCountdown(game);
+  clearRankings(game);
   resetCurrentPhaseActions(game);
   if(game.phase==="BIZ"){
     if(game.bizStep==="MOVE"){ game.bizStep="ML_BID"; return; }
@@ -1184,6 +1249,7 @@ io.on("connection", (socket) => {
     markCommitted(game, playerId, { kind: "ML_BID" });
     maybeStartCountdown(game, playerId);
     finalizeMlResult(game);
+    refreshRankings(game);
     if(areTimedActorsReady(game)) stopCountdown(game);
     ackOk(cb, { result: game.biz.mlResult || null });
     broadcast(game);
@@ -1253,11 +1319,13 @@ io.on("connection", (socket) => {
         const anyLobby = Object.values(entries).some(v=>v?.usedLobbyist);
         if(anyLobby){
           game.biz.auction.lobbyistPhaseActive = true;
+          refreshRankings(game);
           startCountdown(game, null, true);
         }
       }
     }catch{}
 
+    refreshRankings(game);
     finalizeAuctionResult(game);
     if(!game.biz.auction.lobbyistPhaseActive && areTimedActorsReady(game)) stopCountdown(game);
     ackOk(cb, { result: game.biz.auction?.result || null });
@@ -1305,8 +1373,10 @@ io.on("connection", (socket) => {
 
     entry.finalBidUsd = val;
     entry.finalCommitted = true;
+    entry.finalTs = now();
     markCommitted(game, playerId, { kind: "AUCTION_FINAL" });
     maybeStartCountdown(game, playerId);
+    refreshRankings(game);
     finalizeAuctionResult(game);
     if(areTimedActorsReady(game)) stopCountdown(game);
     if(!game.biz.auction.lobbyistPhaseActive && areTimedActorsReady(game)) stopCountdown(game);
